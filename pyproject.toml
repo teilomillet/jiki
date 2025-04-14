@@ -1,0 +1,12 @@
+[project]
+name = "jiki"
+version = "0.0.2"
+description = "A flexible LLM orchestration framework with tool calling capabilities via MCP protocol"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp",
+    "litellm",
+    "pytest",
+    "fastmcp>=2.1.1",
+]

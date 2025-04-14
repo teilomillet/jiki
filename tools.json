@@ -1,0 +1,34 @@
+[
+  {
+    "tool_name": "add",
+    "description": "Add two numbers",
+    "arguments": {
+      "a": {"type": "integer", "description": "First number"},
+      "b": {"type": "integer", "description": "Second number"}
+    }
+  },
+  {
+    "tool_name": "subtract",
+    "description": "Subtract the second number from the first number",
+    "arguments": {
+      "a": {"type": "integer", "description": "The number to subtract from"},
+      "b": {"type": "integer", "description": "The number to subtract"}
+    }
+  },
+  {
+    "tool_name": "multiply",
+    "description": "Multiply two numbers together",
+    "arguments": {
+      "a": {"type": "integer", "description": "First number"},
+      "b": {"type": "integer", "description": "Second number"}
+    }
+  },
+  {
+    "tool_name": "divide",
+    "description": "Divide the first number by the second number",
+    "arguments": {
+      "a": {"type": "integer", "description": "Numerator (number to be divided)"},
+      "b": {"type": "integer", "description": "Denominator (number to divide by)"}
+    }
+  }
+] 
