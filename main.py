@@ -3,11 +3,8 @@
 Jiki - Main entry point for CLI interaction with the Jiki orchestrator.
 """
 
-import jiki
-
-def main():
-    """Run the Jiki CLI."""
-    jiki.run_cli()
+# Import the new main function from the refactored cli module
+from jiki.cli import main
 
 if __name__ == "__main__":
     main()

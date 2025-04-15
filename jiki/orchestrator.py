@@ -1,6 +1,7 @@
 from typing import List, Dict, Any, Optional, Tuple
 import re
 import json
+from jiki.models.response import ToolCall
 
 class JikiOrchestrator:
     def __init__(self, model, mcp_client, tools_config: List[Dict[str, Any]], logger=None):
@@ -15,6 +16,7 @@ class JikiOrchestrator:
         self.tools_config = tools_config
         self.conversation_history = []
         self.logger = logger
+        self._last_tool_calls = []
 
     def create_available_tools_block(self) -> str:
         """
@@ -56,6 +58,7 @@ class JikiOrchestrator:
         """
         Orchestrate a single user query, returning the final answer.
         """
+        self._last_tool_calls = []
         prompt = self.build_initial_prompt(user_input)
         self._log_conversation("user", user_input)
         self._log_conversation("system", prompt)
@@ -176,12 +179,14 @@ class JikiOrchestrator:
             print(f"[DEBUG] Failed to parse tool call JSON: {e}")
             tool_name = None
             arguments = {}
+        
         if not tool_name:
             print("[DEBUG] Invalid tool call: missing tool_name")
             result_block = f"<mcp_tool_result>\nERROR: Invalid tool call (missing tool_name)\n</mcp_tool_result>"
             output_buffer.append(result_block)
             self._log_conversation("system", result_block)
             return "ERROR: Invalid tool call (missing tool_name)"
+        
         # Validate tool_name exists in tools_config
         tool_schema = next((tool for tool in self.tools_config if tool.get("tool_name") == tool_name), None)
         if not tool_schema:
@@ -190,6 +195,7 @@ class JikiOrchestrator:
             output_buffer.append(result_block)
             self._log_conversation("system", result_block)
             return f"ERROR: Tool '{tool_name}' not found."
+        
         # Validate arguments match expected schema (basic check: required keys)
         expected_args = tool_schema.get("arguments", {})
         missing_args = [k for k in expected_args if k not in arguments]
@@ -199,12 +205,28 @@ class JikiOrchestrator:
             output_buffer.append(result_block)
             self._log_conversation("system", result_block)
             return f"ERROR: Missing required arguments: {', '.join(missing_args)}"
+        
         # Call the tool via MCP client
         try:
             tool_result = await self.mcp_client.execute_tool_call(tool_name, arguments)
+            
+            # Record tool call for detailed response
+            self._last_tool_calls.append(ToolCall(
+                tool=tool_name,
+                arguments=arguments,
+                result=tool_result
+            ))
+            
         except Exception as e:
             print(f"[DEBUG] Exception during tool call: {e}")
             tool_result = f"ERROR: Exception during tool call: {e}"
+            # Also record failed tool calls
+            self._last_tool_calls.append(ToolCall(
+                tool=tool_name,
+                arguments=arguments,
+                result=f"ERROR: {e}"
+            ))
+        
         result_block = f"<mcp_tool_result>\n{tool_result}\n</mcp_tool_result>"
         output_buffer.append(result_block)
         self._log_conversation("system", result_block)

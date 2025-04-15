@@ -12,7 +12,13 @@ class TraceLogger:
         self.events: List[Dict[str, Any]] = []
         self.complete_traces: List[Dict[str, Any]] = []
         self.log_dir = log_dir
-        os.makedirs(log_dir, exist_ok=True)
+        # Ensure log_dir exists, possibly handle path object
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except TypeError:
+            # Handle if log_dir is a Path object
+            os.makedirs(str(log_dir), exist_ok=True)
+            self.log_dir = str(log_dir)
 
     def log_event(self, event: Dict[str, Any]):
         """
@@ -36,8 +42,8 @@ class TraceLogger:
         
         self.complete_traces.append(trace_with_meta)
         
-        # Save the trace to a file
-        self._save_trace_to_file(trace_with_meta)
+        # Remove automatic saving per trace
+        # self._save_trace_to_file(trace_with_meta)
         
     def _save_trace_to_file(self, trace: Dict[str, Any]):
         """
@@ -49,20 +55,51 @@ class TraceLogger:
         with open(filename, "w") as f:
             json.dump(trace, f, indent=2)
             
-    def save_all_traces(self):
+    def get_current_traces(self):
         """
-        Save all accumulated traces and events to files.
-        Useful for saving everything at the end of a session.
-        """
-        # Save the regular events
-        if self.events:
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            events_file = f"{self.log_dir}/events_{timestamp}.json"
-            with open(events_file, "w") as f:
-                json.dump(self.events, f, indent=2)
+        Get all traces from the current session.
         
-        # Save each complete trace that hasn't been saved yet
-        for trace in self.complete_traces:
-            if not trace.get("_saved", False):
-                self._save_trace_to_file(trace)
-                trace["_saved"] = True 
+        Returns:
+            list: List of trace dictionaries
+        """
+        return self.complete_traces.copy()
+
+    def save_all_traces(self, filepath=None):
+        """
+        Save all accumulated traces to a file.
+        If filepath is not provided, use the default log directory with timestamp.
+        
+        Args:
+            filepath (str, optional): Path to save the traces
+        """
+        if not self.complete_traces:
+            print("No interaction traces to save.")
+            return
+            
+        if filepath is None:
+            # Create a directory for traces if it doesn't exist
+            os.makedirs(self.log_dir, exist_ok=True)
+            
+            # Generate a timestamp for unique filenames
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Default filepath with timestamp
+            filepath = os.path.join(self.log_dir, f"traces_{timestamp}.json")
+        
+        # Ensure directory exists before writing
+        abs_filepath = os.path.abspath(filepath)
+        os.makedirs(os.path.dirname(abs_filepath), exist_ok=True)
+        
+        # Save as JSON or JSONL based on extension
+        if filepath.endswith('.jsonl'):
+            with open(abs_filepath, "w") as f:
+                for trace in self.complete_traces:
+                    f.write(json.dumps(trace) + "\n")
+        else:
+            # Default to JSON if not .jsonl
+            with open(abs_filepath, "w") as f:
+                json.dump(self.complete_traces, f, indent=2)
+                
+        print(f"Saved {len(self.complete_traces)} interaction traces to {abs_filepath}")
+        
+        # Removed saving of self.events as per plan focus on complete_traces 
