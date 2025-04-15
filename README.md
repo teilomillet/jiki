@@ -4,7 +4,7 @@ Jiki is a flexible LLM orchestration framework with built-in tool calling capabi
 
 ## Overview
 
-Jiki provides a clean interface for building AI assistants that can use tools to solve problems. It orchestrates the interaction between language models and external tools using the MCP (Model-Call-Platform) protocol.
+Jiki provides a clean interface for building AI assistants that can use tools to solve problems. It orchestrates the interaction between language models and external tools using the MCP (Model Context Protocol).
 
 ## Features
 
