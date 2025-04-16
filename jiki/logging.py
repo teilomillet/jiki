@@ -35,9 +35,12 @@ class TraceLogger:
         """
         # Add timestamp to the trace
         timestamp = datetime.datetime.now().isoformat()
+        # Always include an explicit reward field so downstream RL code can
+        # easily fill it in.  If the caller already supplied one, keep it.
         trace_with_meta = {
             "timestamp": timestamp,
-            **trace_data
+            "reward": trace_data.get("reward"),  # None if missing
+            **trace_data,
         }
         
         self.complete_traces.append(trace_with_meta)

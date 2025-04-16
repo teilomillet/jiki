@@ -14,7 +14,6 @@ from .logging import TraceLogger
 from .tools.config import load_tools_config
 from .tools.tool import Tool
 from .models.response import DetailedResponse, ToolCall
-from .cli import main as cli_main, run_cli as old_run_cli
 
 __all__ = [
     'JikiOrchestrator',
@@ -28,7 +27,6 @@ __all__ = [
     'Tool',
     'DetailedResponse',
     'ToolCall',
-    'cli_main'
 ]
 
 def create_orchestrator(

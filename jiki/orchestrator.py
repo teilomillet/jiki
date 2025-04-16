@@ -1,7 +1,43 @@
+"""
+Jiki Orchestrator
+=================
+
+This module contains the :class:`JikiOrchestrator` – the central coordination
+engine that powers Jiki's tool‑augmented conversations.
+
+High‑level responsibilities
+--------------------------
+1. Build an initial system prompt exposing the available tool schemas to the
+   underlying Large Language Model (LLM).
+2. Stream tokens from the LLM, intercepting ``<mcp_tool_call>`` blocks emitted
+   by the model in‑flight.
+3. Validate tool calls against the configured schemas and dispatch them via an
+   :class:`~jiki.mcp_client.EnhancedMCPClient` implementation.
+4. Inject tool results back into the conversational context so the model can
+   continue reasoning.
+5. Maintain a rolling message buffer that is trimmed to stay within the model's
+   context window.
+6. Emit richly‑structured interaction traces through :class:`~jiki.logging.TraceLogger`
+   for offline reinforcement learning (RL) or analysis.
+
+Typical Usage
+-------------
+>>> from jiki import create_jiki
+>>> orchestrator = create_jiki()
+>>> response = orchestrator.process("What is 2 + 2?")
+>>> print(response)
+
+"""
 from typing import List, Dict, Any, Optional, Tuple
 import re
 import json
 from jiki.models.response import ToolCall
+
+try:
+    # Optional dependency – provides exact token counts for OpenAI models
+    import tiktoken  # type: ignore
+except ImportError:
+    tiktoken = None
 
 class JikiOrchestrator:
     def __init__(self, model, mcp_client, tools_config: List[Dict[str, Any]], logger=None):
@@ -14,9 +50,11 @@ class JikiOrchestrator:
         self.model = model
         self.mcp_client = mcp_client
         self.tools_config = tools_config
-        self.conversation_history = []
+        self.conversation_history: List[Dict[str, str]] = []
         self.logger = logger
         self._last_tool_calls = []
+        # In‑memory chat log in LiteLLM / OpenAI format
+        self._messages: List[Dict[str, str]] = []
 
     def create_available_tools_block(self) -> str:
         """
@@ -54,35 +92,47 @@ class JikiOrchestrator:
         )
         return prompt
 
-    async def process_user_input(self, user_input: str) -> str:
+    async def process_user_input(self, user_input: str, max_tokens_ctx: int = 6000) -> str:
         """
         Orchestrate a single user query, returning the final answer.
         """
         self._last_tool_calls = []
-        prompt = self.build_initial_prompt(user_input)
-        self._log_conversation("user", user_input)
-        self._log_conversation("system", prompt)
-        final_answer = await self._generate_and_intercept(prompt)
+        if not self._messages:
+            # First turn: push system instructions and tool list
+            self._messages.append({"role": "system", "content": self.build_initial_prompt("")})
+
+        # Append the new user message
+        self._messages.append({"role": "user", "content": user_input})
+
+        # Trim context if oversized based on token count
+        while self._num_tokens(self._messages) > max_tokens_ctx and len(self._messages) > 2:
+            # Pop the second message (index 1) – keep system message
+            self._messages.pop(1)
+
+        prompt = ""  # not used any more downstream, but left for logging
+
+        self._log_conversation("system", str(self._messages))
+        final_answer = await self._generate_and_intercept(self._messages)
+
+        self._messages.append({"role": "assistant", "content": final_answer})
         return final_answer
 
-    async def _generate_and_intercept(self, prompt: str) -> str:
+    async def _generate_and_intercept(self, messages: List[Dict[str, str]]) -> str:
         """
         Streams tokens from the model and intercepts <mcp_tool_call> or <mcp_tool_request> if encountered.
         Also captures <Assistant_Thought> blocks for training data.
         """
         output_buffer = []
-        context = prompt
-        raw_conversation = []  # Store the complete conversation with all tags for training data
-        
-        # Add the initial user query and available tools to raw conversation
-        raw_conversation.append({"role": "user", "content": context})
+        # Copy the reference of the running context list so we can mutate it in‑place
+        context = messages
+
+        raw_conversation: List[Dict[str, Any]] = []  # Store complete convo (using strings for content)
+        raw_conversation.append({"role": "system", "content": str(context[0]["content"]) if context else ""})
         
         while True:
             tool_call_found = False
             thought_found = False
-            async for token in self.model.generate_tokens([
-                {"role": "user", "content": context}
-            ]):
+            async for token in self.model.generate_tokens(context):
                 output_buffer.append(token)
                 combined_output = "".join(output_buffer)
                 
@@ -103,21 +153,19 @@ class JikiOrchestrator:
                     # Handle the tool call
                     tool_result = await self._handle_tool_call(call_content, output_buffer)
                     
-                    # Record the tool call and result in raw conversation
+                    # Record the tool result in raw conversation
                     raw_conversation.append({
-                        "role": "system", 
+                        "role": "system",
                         "content": f"<mcp_tool_result>\n{tool_result}\n</mcp_tool_result>"
                     })
                     
-                    # Prepare new context for continued generation
-                    context = (
-                        f"{context}\n\n"
-                        f"{combined_output}\n\n"
-                        f"<mcp_tool_result>\n{tool_result}\n</mcp_tool_result>\n\n"
-                        f"Continue your response based on this result:"
-                    )
-                    output_buffer = []  # reset buffer for next generation
-                    break  # restart streaming with updated context
+                    # Append to the running message context: assistant output so far, then tool result, then an instruction to continue
+                    context.append({"role": "assistant", "content": combined_output})
+                    context.append({"role": "system", "content": f"<mcp_tool_result>\n{tool_result}\n</mcp_tool_result>"})
+                    # No need for a textual nudge; the chat schema will prompt the model to continue
+
+                    output_buffer = []  # reset buffer
+                    break  # restart generation with updated context list
             
             if not tool_call_found:
                 # If no tool call was found, add final assistant response to raw conversation
@@ -132,7 +180,8 @@ class JikiOrchestrator:
         if self.logger:
             self.logger.log_complete_trace({
                 "conversation": raw_conversation,
-                "final_clean_output": clean_output
+                "final_clean_output": clean_output,
+                "reward": None
             })
         
         self._log_conversation("assistant", clean_output)
@@ -155,7 +204,7 @@ class JikiOrchestrator:
         for pattern in patterns:
             result = re.sub(pattern, "", result, flags=re.DOTALL)
             
-        # Remove any "Continue your response based on this result:" prompts
+        # The helper string is no longer inserted; keep regex for backward compatibility but it's optional
         result = re.sub(r"Continue your response based on this result:", "", result)
             
         # Trim whitespace and normalize newlines
@@ -264,3 +313,24 @@ class JikiOrchestrator:
         if match:
             return match.group(1).strip()
         return None 
+
+    # ------------------------------------------------------------------
+    # Helper – estimate prompt length in model tokens so we can trim
+    # context safely.  Uses tiktoken if available; otherwise falls back
+    # to rough character‑based heuristic (≈4 chars per token).
+    # ------------------------------------------------------------------
+    def _num_tokens(self, messages: List[Dict[str, str]]) -> int:
+        if tiktoken is not None:
+            try:
+                enc = tiktoken.encoding_for_model(self.model.model_name)
+            except Exception:
+                enc = tiktoken.get_encoding("cl100k_base")
+
+            tokens = 0
+            for m in messages:
+                # Per OpenAI guide: every message gets <|start|>role\ncontent<|end|>
+                tokens += 4  # rough per‑message overhead
+                tokens += len(enc.encode(m.get("content", "")))
+            return tokens
+        # Fallback – 1 token ≈ 4 chars (very rough)
+        return len(str(messages)) // 4 

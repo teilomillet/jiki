@@ -6,11 +6,18 @@ import json
 import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
-# Import create_jiki and potentially other needed components
-from . import create_jiki, JikiOrchestrator, Tool, DetailedResponse, ToolCall
+# Import other needed components, but NOT create_jiki here
+from .orchestrator import JikiOrchestrator
+from .tools.tool import Tool
+from .models.response import DetailedResponse, ToolCall
+# We still need create_jiki, but will import it later
+# from . import create_jiki 
 
 def process_command(args):
     """Handle the process command."""
+    # Import create_jiki here, just before it's needed
+    from . import create_jiki
+    
     # Read from stdin if no query
     query = args.query
     if not query and not sys.stdin.isatty():
@@ -81,11 +88,15 @@ def process_command(args):
 
 def trace_command(args):
     """Handle the trace command."""
+    # Import create_jiki here, just before it's needed
+    from . import create_jiki
+        
     if args.action == "export":
         # Create a dummy orchestrator just to access logger/traces
         # This assumes create_jiki sets up logging even if not processing
         try:
-            orchestrator = create_jiki(trace=True) # Need trace=True to get logger
+            # Need trace=True to ensure logger is created by create_jiki
+            orchestrator = create_jiki(trace=True) 
             orchestrator.export_traces(args.output)
         except RuntimeError as e:
              print(f"Error exporting traces: {e}", file=sys.stderr)
@@ -99,6 +110,9 @@ def trace_command(args):
 
 def run_interactive_cli(args):
     """Run the interactive command-line interface (similar to old run_cli)."""
+    # Import create_jiki here, just before it's needed
+    from . import create_jiki
+    
     print("Jiki orchestrator CLI (interactive). Type your question or 'exit' to quit.")
     
     # Process tools argument (similar to process_command)

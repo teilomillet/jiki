@@ -22,28 +22,43 @@ uv add jiki
 ```
 
 ```python
-from jiki import create_orchestrator
+from jiki import create_jiki
 
-# Create a preconfigured orchestrator with sensible defaults
-components = create_orchestrator(
-    model_name="anthropic/claude-3-7-sonnet-latest",
-    tools_config_path="tools.json",
-    mcp_mode="stdio"
+# Create a pre‑configured orchestrator with sensible defaults
+orchestrator = create_jiki(
+    model="anthropic/claude-3-7-sonnet-latest",
+    # Path to a JSON file that describes your tools (see below)
+    tools="tools.json",
+    mcp_mode="stdio"  # or "sse" to connect to a remote FastMCP server
 )
 
-# Get the orchestrator instance
-orchestrator = components["orchestrator"]
-
-# Process a user query
-import asyncio
-result = asyncio.run(orchestrator.process_user_input("What is 2+2?"))
+# Process a user query (synchronous helper available)
+result = orchestrator.process("What is 2 + 2?")
 print(result)
 ```
 
 ## CLI Usage
 
 ```bash
-uv run main.py
+uv run examples/simple_multiturn_cli.py --tools tools.json
+```
+
+## Detailed Responses & Tracing
+
+Jiki can return a rich `DetailedResponse` object that includes the assistant's
+answer **and** all tool calls / raw traces generated during the turn.  This is
+useful for debugging, analytics, or offline reinforcement‑learning pipelines.
+
+```python
+# Get a structured response with trace metadata
+detailed = orchestrator.process_detailed("What is the capital of France?")
+
+print(detailed.result)      # The assistant's final answer
+print(detailed.tool_calls)  # List[ToolCall] detailing every tool invocation
+print(detailed.traces)      # Raw trace dictionaries for deeper inspection
+
+# Persist traces from the current session
+orchestrator.export_traces("interaction_traces/session.jsonl")
 ```
 
 ## Creating Custom Tools
@@ -80,6 +95,7 @@ if __name__ == "__main__":
 ## Requirements
 
 - Python 3.11+
-- litellm
+- litellm >= 1.35.0 (or the latest)
 - fastmcp >= 2.1.1
 - mcp
+- tiktoken (optional – enables exact token counting)
