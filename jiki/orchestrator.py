@@ -32,6 +32,13 @@ from typing import List, Dict, Any, Optional, Tuple
 import re
 import json
 from jiki.models.response import ToolCall
+from jiki.utils import (
+    repair_json, 
+    validate_tool_arguments, 
+    categorize_error, 
+    format_argument_descriptions,
+    clean_output
+)
 
 try:
     # Optional dependency – provides exact token counts for OpenAI models
@@ -55,6 +62,18 @@ class JikiOrchestrator:
         self._last_tool_calls = []
         # In‑memory chat log in LiteLLM / OpenAI format
         self._messages: List[Dict[str, str]] = []
+        
+        # Pre-compile regex patterns for better performance
+        self._tool_call_pattern = re.compile(r"(<mcp_tool_call>)(.*?)(</mcp_tool_call>)", re.DOTALL)
+        self._thought_pattern = re.compile(r"<Assistant_Thought>(.*?)</Assistant_Thought>", re.DOTALL)
+        # Patterns used in _clean_output
+        self._clean_patterns = [
+            re.compile(r"<mcp_tool_call>.*?</mcp_tool_call>", re.DOTALL),
+            re.compile(r"<mcp_tool_result>.*?</mcp_tool_result>", re.DOTALL),
+            re.compile(r"<mcp_available_tools>.*?</mcp_available_tools>", re.DOTALL),
+            re.compile(r"<Assistant_Thought>.*?</Assistant_Thought>", re.DOTALL),
+        ]
+        self._whitespace_pattern = re.compile(r"\n{3,}")
 
     def create_available_tools_block(self) -> str:
         """
@@ -197,27 +216,12 @@ class JikiOrchestrator:
         Clean the output by removing MCP-related tags and formatting for final user display.
         For training data generation, the original output with tags is preserved in the logs.
         """
-        # Remove any tool call blocks or tool result blocks
-        patterns = [
-            r"<mcp_tool_call>.*?</mcp_tool_call>",
-            r"<mcp_tool_result>.*?</mcp_tool_result>",
-            r"<mcp_available_tools>.*?</mcp_available_tools>",
-            r"<Assistant_Thought>.*?</Assistant_Thought>",
-        ]
-        
-        result = text
-        for pattern in patterns:
-            result = re.sub(pattern, "", result, flags=re.DOTALL)
-            
-        # Trim whitespace and normalize newlines
-        result = re.sub(r"\n{3,}", "\n\n", result.strip())
-        
-        return result
+        return clean_output(text, self._clean_patterns)
 
     async def _handle_tool_call(self, call_content: str, output_buffer: List[str]) -> str:
         """
         Extract call details, validate, pass to MCP client, inject the result in conversation, and continue generation.
-        Attempts to robustly parse JSON even if surrounded by extraneous text within the tags.
+        Enhanced with better JSON parsing and error recovery for malformed tool calls.
         Returns the tool result content (string) for context continuation.
         """
         if self.logger:
@@ -225,42 +229,43 @@ class JikiOrchestrator:
             self.logger.debug(f"Received raw tool call content: {call_content!r}") 
         
         # ------------------------------------------------------------------
-        # Parse the JSON payload inside <mcp_tool_call> tags.
+        # ENHANCED JSON PARSING WITH BETTER ERROR RECOVERY
         # Strategy:
         #   1. First try to parse the entire `call_content` as JSON.
         #   2. If that fails, look for the first '{' and last '}' and
         #      attempt to parse that substring as JSON.
-        # This handles cases where the LLM wraps the JSON with explanatory
-        # text while keeping the implementation relatively simple.
+        #   3. If that fails, try to fix common JSON errors (single quotes, trailing commas)
+        #   4. Track the parsing method used for better error reporting
         # ------------------------------------------------------------------
 
         tool_name: Optional[str] = None
         arguments: Dict[str, Any] = {}
+        
+        # Use the repair_json utility function
+        tool_call, parsing_method, parsing_error = repair_json(call_content)
 
-        try:
-            tool_call = json.loads(call_content)
-        except json.JSONDecodeError:
-            json_start = call_content.find('{')
-            json_end = call_content.rfind('}')
-            if json_start != -1 and json_end != -1 and json_end > json_start:
-                try:
-                    tool_call = json.loads(call_content[json_start : json_end + 1])
-                except json.JSONDecodeError:
-                    tool_call = {}
-            else:
-                tool_call = {}
+        # Log the parsing method used (helpful for debugging)
+        if self.logger and parsing_method != "direct":
+            self.logger.debug(f"JSON parsing method: {parsing_method}, error: {parsing_error}")
 
+        # Extract tool name and arguments with better validation
         if isinstance(tool_call, dict):
             tool_name = tool_call.get("tool_name")
             raw_args = tool_call.get("arguments", {})
             arguments = raw_args if isinstance(raw_args, dict) else {}
 
-        # --- Validation Checks ---
+        # --- Enhanced Validation and Error Reporting ---
         
         if not tool_name:
+            detailed_error = "Missing or invalid 'tool_name' field in the JSON object."
+            if parsing_method != "direct":
+                detailed_error += f" JSON parsing method: {parsing_method}."
+                if parsing_error:
+                    detailed_error += f" Error: {parsing_error}"
+            
+            result_content = f"ERROR: Invalid tool call. {detailed_error} Please provide a valid JSON object with 'tool_name' and 'arguments' fields."
             if self.logger:
-                self.logger.debug(f"Invalid tool call: could not determine 'tool_name' from content: {call_content!r}")
-            result_content = "ERROR: Invalid tool call (missing or malformed JSON 'tool_name')."
+                self.logger.debug(f"Tool call validation failed: {detailed_error}")
             result_block = f"<mcp_tool_result>\n{result_content}\n</mcp_tool_result>"
             self._log_conversation("system", result_block)
             return result_content
@@ -270,33 +275,62 @@ class JikiOrchestrator:
         if not tool_schema:
             if self.logger:
                 self.logger.debug(f"Tool '{tool_name}' not found in configured tools.")
-            result_content = f"ERROR: Tool '{tool_name}' not found."
+            
+            # Enhanced error message with available tools
+            available_tools = [t.get("tool_name") for t in self.tools_config if t.get("tool_name")]
+            result_content = f"ERROR: Tool '{tool_name}' not found. Available tools are: {', '.join(available_tools)}"
             result_block = f"<mcp_tool_result>\n{result_content}\n</mcp_tool_result>"
             self._log_conversation("system", result_block)
             return result_content
 
-        # Validate arguments match expected schema (basic check: required keys)
+        # Enhanced argument validation with more detailed feedback
         expected_args = tool_schema.get("arguments", {})
-        missing_args = [k for k in expected_args if k not in arguments]
-        if missing_args:
+        required_args = tool_schema.get("required", [])
+        
+        # Use the validate_tool_arguments utility function
+        missing_args, type_mismatches = validate_tool_arguments(
+            arguments, expected_args, required_args
+        )
+        
+        if missing_args or type_mismatches:
+            error_details = []
+            if missing_args:
+                error_details.append(f"Missing required arguments: {', '.join(missing_args)}")
+            if type_mismatches:
+                error_details.append(f"Type mismatches: {', '.join(type_mismatches)}")
+            
+            # Include argument schema in error message for clarity
+            arg_descriptions = format_argument_descriptions(expected_args, required_args)
+            
+            result_content = (
+                f"ERROR: Invalid arguments for tool '{tool_name}'.\n"
+                f"{'; '.join(error_details)}\n\n"
+                f"Expected arguments:\n"
+                f"{chr(10).join(arg_descriptions)}"
+            )
+            
             if self.logger:
-                self.logger.debug(f"Tool '{tool_name}' called with missing required arguments: {missing_args}")
-            result_content = f"ERROR: Tool '{tool_name}' missing required arguments: {missing_args}"
+                self.logger.debug(f"Tool '{tool_name}' called with invalid arguments: {error_details}")
+            
             result_block = f"<mcp_tool_result>\n{result_content}\n</mcp_tool_result>"
             self._log_conversation("system", result_block)
             return result_content
             
-        # --- Execute Tool via MCP Client --- (Unchanged)
+        # --- Execute Tool via MCP Client with Enhanced Error Handling ---
         try:
             if self.logger:
                 # Use repr() for arguments to show structure clearly
                 self.logger.debug(f"Calling MCP client: tool='{tool_name}', args={arguments!r}")
+            
+            # Execute the tool call
             tool_result_content = await self.mcp_client.execute_tool_call(tool_name, arguments)
+            
             if self.logger:
                 # Use repr() for result to show structure clearly
                 self.logger.debug(f"MCP client result for '{tool_name}': {tool_result_content!r}")
+            
             # Record this successful call
-            self._last_tool_calls.append(ToolCall(tool_name=tool_name, arguments=arguments, result=str(tool_result_content)))
+            self._last_tool_calls.append(ToolCall(tool=tool_name, arguments=arguments, result=str(tool_result_content)))
             
             # Format the result for injection
             result_block = f"<mcp_tool_result>\n{tool_result_content}\n</mcp_tool_result>"
@@ -304,10 +338,23 @@ class JikiOrchestrator:
             return str(tool_result_content) # Return the actual result content
             
         except Exception as e:
+            import traceback
+            error_traceback = traceback.format_exc()
+            
             if self.logger:
-                # Log exception info for more details
+                # Log detailed exception info
                 self.logger.debug(f"Error calling tool '{tool_name}' via MCP client: {e}", exc_info=True)
-            result_content = f"ERROR: Failed to execute tool '{tool_name}': {e}"
+            
+            # Use the categorize_error utility function
+            error_category, friendly_message = categorize_error(e)
+            
+            # Create a detailed error message
+            result_content = (
+                f"ERROR ({error_category}): Failed to execute tool '{tool_name}'.\n"
+                f"{friendly_message}\n"
+                f"Please check your inputs and try again."
+            )
+            
             result_block = f"<mcp_tool_result>\n{result_content}\n</mcp_tool_result>"
             self._log_conversation("system", result_block)
             return result_content
@@ -327,8 +374,8 @@ class JikiOrchestrator:
         Returns the raw content inside the block if found, otherwise None.
         The content might contain more than just JSON.
         """
-        # Regex remains the same, captures everything between tags
-        match = re.search(r"(<mcp_tool_call>)(.*?)(</mcp_tool_call>)", text, re.DOTALL)
+        # Use pre-compiled pattern for better performance
+        match = self._tool_call_pattern.search(text)
         if match:
             content = match.group(2)
             closing_tag = match.group(3)
@@ -342,8 +389,7 @@ class JikiOrchestrator:
         """
         Detect an <Assistant_Thought> block in text and return its content.
         """
-        pattern = r"<Assistant_Thought>(.*?)</Assistant_Thought>"
-        match = re.search(pattern, text, flags=re.DOTALL)
+        match = self._thought_pattern.search(text)
         if match:
             return match.group(1).strip()
         return None 

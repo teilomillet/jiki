@@ -169,3 +169,41 @@ if __name__ == "__main__":
 - fastmcp >= 2.1.1
 - mcp
 - tiktoken (optional – enables exact token counting)
+
+## Recent Improvements
+
+### Functional Programming Approach
+
+The codebase has been refactored to follow a more functional programming approach, making it easier to test and maintain:
+
+1. **Pure Utility Functions**: Extracted pure functions to `utils.py` that have no side effects and don't depend on external state:
+   - `repair_json`: Parses and repairs malformed JSON strings
+   - `validate_tool_arguments`: Validates tool arguments against a schema
+   - `categorize_error`: Categorizes exceptions for better error reporting
+   - `format_argument_descriptions`: Formats argument descriptions for error messages
+   - `clean_output`: Cleans output by removing patterns and normalizing whitespace
+
+2. **Improved Error Handling**: Enhanced error handling with better JSON parsing and recovery for malformed tool calls
+
+3. **Pre-compiled Regex Patterns**: Optimized performance by pre-compiling regex patterns at initialization
+
+### Testing Infrastructure
+
+Added comprehensive testing infrastructure:
+
+1. **Unit Tests**: Created unit tests for all utility functions and the JikiOrchestrator class
+2. **Test Fixtures**: Added fixtures for mocking dependencies
+3. **Async Testing**: Set up pytest-asyncio for testing asynchronous code
+
+### Running Tests
+
+```bash
+# Install test dependencies
+pip install pytest pytest-asyncio
+
+# Run all tests
+python -m pytest
+
+# Run specific test file
+python -m pytest tests/test_utils.py
+```
