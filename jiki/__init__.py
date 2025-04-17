@@ -1,11 +1,7 @@
 """
 Jiki - A flexible LLM orchestration framework with built-in tool calling capabilities.
 """
-
-from typing import List, Dict, Any, Union
-import json
 import asyncio
-import types
 import sys
 
 from .orchestrator import JikiOrchestrator
@@ -15,6 +11,11 @@ from .logging import TraceLogger
 from .tools.config import load_tools_config
 from .tools.tool import Tool
 from .models.response import DetailedResponse, ToolCall
+from .orchestrator_helpers import _attach_helper_methods
+
+# Make the interactive loop function importable if needed elsewhere
+# For now, it's defined in cli.py, so we'll import it within run_ui
+# from .cli import _run_interactive_loop # Potential future import
 
 __all__ = [
     'JikiOrchestrator',
@@ -23,55 +24,11 @@ __all__ = [
     'EnhancedMCPClient',
     'TraceLogger',
     'load_tools_config',
-    'create_orchestrator',
     'create_jiki',
     'Tool',
     'DetailedResponse',
     'ToolCall',
 ]
-
-def create_orchestrator(
-    model_name="anthropic/claude-3-sonnet-20240229",
-    tools_config_path="tools.json",
-    mcp_mode="stdio",
-    mcp_script_path=None,
-    enable_logging=True
-):
-    """
-    Create a preconfigured Jiki orchestrator with sensible defaults.
-    
-    :param model_name: The LiteLLM-supported model name
-    :param tools_config_path: Path to the tools configuration JSON file
-    :param mcp_mode: MCP transport mode ("stdio" or "sse")
-    :param mcp_script_path: Path to MCP server script (or URL for SSE)
-    :param enable_logging: Whether to enable logging of interaction traces
-    :return: Configured JikiOrchestrator instance and helper components
-    """
-    # Create the model
-    model = LiteLLMModel(model_name)
-    
-    # Create the logger if enabled
-    logger = TraceLogger() if enable_logging else None
-    
-    # Create the MCP client
-    mcp_client = EnhancedMCPClient(
-        transport_type=mcp_mode,
-        script_path=mcp_script_path
-    )
-    
-    # Load tools configuration
-    tools_config = load_tools_config(tools_config_path)
-    
-    # Create orchestrator
-    orchestrator = JikiOrchestrator(model, mcp_client, tools_config, logger=logger)
-    
-    return {
-        "orchestrator": orchestrator,
-        "model": model,
-        "mcp_client": mcp_client,
-        "logger": logger,
-        "tools_config": tools_config
-    }
 
 def create_jiki(
     model="anthropic/claude-3-7-sonnet-latest",
@@ -164,7 +121,7 @@ def create_jiki(
                     # if default_tool:
                     #     tools_config.append(default_tool)
                     # else:
-                    raise ValueError(f"Providing tool names as strings is not supported when not using auto-discovery. Provide full schema dict or Tool object, or use a config file.")
+                    raise ValueError("Providing tool names as strings is not supported when not using auto-discovery. Provide full schema dict or Tool object, or use a config file.")
                 elif isinstance(tool_item, Tool):
                     # Convert Tool object to config dict
                     tools_config.append(tool_item.to_dict())
@@ -183,122 +140,7 @@ def create_jiki(
     # Create orchestrator
     orchestrator = JikiOrchestrator(model_instance, mcp_client, tools_config, logger=logger)
     
-    # Attach helper methods
+    # Attach helper methods using the imported function
     _attach_helper_methods(orchestrator, logger)
     
     return orchestrator
-
-def _get_default_tool(tool_name):
-    """Retrieve a default tool configuration by name."""
-    # Simple example default tools - can be expanded or made configurable
-    default_tools = {
-        "calculator": {
-            "tool_name": "calculator",
-            "description": "Perform mathematical calculations on an expression.",
-            "arguments": {
-                "expression": {"type": "string", "description": "The mathematical expression to evaluate (e.g., '2 + 2 * 5')"}
-            }
-        },
-        "add": {
-            "tool_name": "add",
-            "description": "Add two numbers together.",
-            "arguments": {
-                "a": {"type": "integer", "description": "The first number to add.", "required": True},
-                "b": {"type": "integer", "description": "The second number to add.", "required": True}
-            }
-        },
-         "subtract": {
-            "tool_name": "subtract",
-            "description": "Subtract the second number from the first number.",
-            "arguments": {
-                "a": {"type": "integer", "description": "The number to subtract from.", "required": True},
-                "b": {"type": "integer", "description": "The number to subtract.", "required": True}
-            }
-        },
-        "multiply": {
-            "tool_name": "multiply",
-            "description": "Multiply two numbers together.",
-            "arguments": {
-                "a": {"type": "integer", "description": "The first number to multiply.", "required": True},
-                "b": {"type": "integer", "description": "The second number to multiply.", "required": True}
-            }
-        },
-        "divide": {
-            "tool_name": "divide",
-            "description": "Divide the first number by the second number.",
-            "arguments": {
-                "a": {"type": "integer", "description": "The numerator (number to be divided).", "required": True},
-                "b": {"type": "integer", "description": "The denominator (number to divide by).", "required": True}
-            }
-        }
-        # Add more default tools here
-    }
-    return default_tools.get(tool_name)
-
-def _attach_helper_methods(orchestrator, logger):
-    """Attach helper methods to the orchestrator instance."""
-    
-    # Add synchronous wrapper for process_user_input
-    # Using self requires binding the method
-    def process(self, user_input):
-        """Synchronous wrapper for process_user_input."""
-        # Ensure event loop management is robust
-        try:
-            loop = asyncio.get_running_loop()
-            # If a loop is running, create a task
-            # This might be needed in some environments like notebooks
-            # but asyncio.run handles loop creation/closing generally.
-            # For simplicity, stick with asyncio.run for now.
-            # fut = asyncio.ensure_future(self.process_user_input(user_input))
-            # loop.run_until_complete(fut)
-            # return fut.result()
-            return asyncio.run(self.process_user_input(user_input))
-        except RuntimeError: # No running event loop
-            return asyncio.run(self.process_user_input(user_input))
-    
-    # Add method to get detailed response with tool calls
-    async def process_detailed_async(self, user_input):
-        """Process user input and return a DetailedResponse with result and tool calls."""
-        # Ensure _last_tool_calls is reset before processing (already done in updated process_user_input)
-        result = await self.process_user_input(user_input)
-        
-        # Tool calls are now stored in self._last_tool_calls by the updated _handle_tool_call
-        tool_calls_list = getattr(self, "_last_tool_calls", [])
-        
-        traces_list = None
-        if logger and hasattr(logger, 'get_current_traces'):
-            # Assuming get_current_traces gives traces for the *last* interaction
-            # or all traces. The plan implies getting current session traces.
-            traces_list = logger.get_current_traces()
-            # If get_current_traces returns ALL traces, need filtering logic here
-            # For now, assume it returns relevant traces for the last call (or all)
-            
-        return DetailedResponse(
-            result=result,
-            tool_calls=tool_calls_list,
-            traces=traces_list
-        )
-    
-    # Synchronous version of process_detailed
-    def process_detailed(self, user_input):
-        """Synchronous wrapper for process_detailed_async."""
-        try:
-            loop = asyncio.get_running_loop()
-            return asyncio.run(self.process_detailed_async(user_input))
-        except RuntimeError: # No running event loop
-            return asyncio.run(self.process_detailed_async(user_input))
-    
-    # Export traces method
-    def export_traces(self, filepath=None):
-        """Export all interaction traces to a file."""
-        if not logger or not hasattr(logger, 'save_all_traces'):
-            raise RuntimeError("Tracing is not enabled or logger does not support saving traces.")
-        
-        # filepath=None will use default in save_all_traces
-        logger.save_all_traces(filepath)
-    
-    # Attach methods to orchestrator instance using types.MethodType
-    orchestrator.process = types.MethodType(process, orchestrator)
-    orchestrator.process_detailed_async = types.MethodType(process_detailed_async, orchestrator)
-    orchestrator.process_detailed = types.MethodType(process_detailed, orchestrator)
-    orchestrator.export_traces = types.MethodType(export_traces, orchestrator) 

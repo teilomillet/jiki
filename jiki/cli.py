@@ -98,65 +98,84 @@ def trace_command(args):
         print(f"Unknown trace action: {args.action}", file=sys.stderr)
         sys.exit(1)
 
+def _run_interactive_loop(orchestrator):
+    """Core interactive chat loop logic."""
+    print("Jiki multi-turn CLI. Type your message, or 'exit' to quit.")
+    while True:
+        try:
+            user_input = input("You: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()  # newline after ^C/^D
+            break
+
+        if not user_input or user_input.lower() == "exit":
+            break
+
+        try:
+            response = orchestrator.process(user_input)
+            # Add a newline for better spacing in interactive mode
+            print(f"Jiki: {response}\n") 
+        except Exception as e:
+            # Print error clearly and continue loop
+            print(f"[ERROR] {e}\n", file=sys.stderr) 
+
+    # Save traces (if tracing enabled in orchestrator)
+    print("Exiting interactive mode.")
+    try:
+        # Default path (None) uses configured trace_dir or default
+        orchestrator.export_traces(None) 
+    except RuntimeError as e:
+        # Handle case where tracing might not have been enabled or no traces logged
+        print(f"[INFO] Could not export traces: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"[ERROR] Unexpected error exporting traces: {e}", file=sys.stderr)
+
 def run_interactive_cli(args):
-    """Run the interactive command-line interface (similar to old run_cli)."""
+    """Set up and run the interactive command-line interface."""
     # Import create_jiki here, just before it's needed
     from . import create_jiki
-    
-    print("Jiki orchestrator CLI (interactive). Type your question or 'exit' to quit.")
-    
-    # Process tools argument (similar to process_command)
+
+    # Process tools argument (reusing logic, could be refactored)
     tools_arg = args.tools
     tools_input = None
     if tools_arg:
+        # Is it a filepath?
         if os.path.exists(tools_arg):
             tools_input = tools_arg
         else:
+            # Try inline JSON list
             try:
                 tools_input = json.loads(tools_arg)
             except json.JSONDecodeError:
+                # Fallback: comma-separated names
+                # Consider adding default tool lookup here if desired
                 tools_input = tools_arg.split(',')
-                
+    else:
+        # Add sensible defaults if no tools specified for interactive mode
+        # Match the defaults from the old example for consistency
+        tools_input = ["add", "subtract", "multiply", "divide"]
+        print("[INFO] No tools specified, using default calculator tools.", file=sys.stderr)
+
     # Create orchestrator
     try:
         orchestrator = create_jiki(
             model=args.model if args.model else "anthropic/claude-3-7-sonnet-latest",
             tools=tools_input,
-            trace=True # Always trace in interactive mode?
+            trace=True, # Always trace in interactive mode
+            trace_dir=args.trace_dir # Pass trace_dir argument
         )
     except ValueError as e:
         print(f"Error creating orchestrator: {e}", file=sys.stderr)
-        return
+        sys.exit(1) # Exit if orchestrator fails
     except FileNotFoundError as e:
          print(f"Error loading tools: {e}", file=sys.stderr)
-         return
-         
-    while True:
-        try:
-            user_input = input("You: ").strip()
-            if not user_input or user_input.lower() == "exit":
-                print("Exiting interactive mode.")
-                # Optionally save traces on exit
-                try:
-                    orchestrator.export_traces(None) # Use default path
-                except RuntimeError:
-                    pass # Tracing might not have been enabled or no traces
-                break
-            
-            # Use the simple process method for interactive mode
-            result = orchestrator.process(user_input)
-            print(f"Jiki: {result}")
-            
-        except (KeyboardInterrupt, EOFError):
-            print("\nExiting interactive mode.")
-            # Optionally save traces on exit
-            try:
-                orchestrator.export_traces(None)
-            except RuntimeError:
-                pass
-            break
-        except Exception as e:
-            print(f"Error: {e}")
+         sys.exit(1) # Exit if tools file not found
+    except Exception as e: # Catch other potential errors during creation
+         print(f"Unexpected error creating orchestrator: {e}", file=sys.stderr)
+         sys.exit(1)
+
+    # Start the interactive loop using the new method
+    orchestrator.run_ui(frontend='cli')
 
 def main():
     """Main CLI entrypoint using argparse."""
@@ -186,8 +205,9 @@ def main():
     # --- Run command (interactive mode) --- 
     run_parser = subparsers.add_parser("run", help="Run Jiki in interactive mode")
     run_parser.add_argument("--model", "-m", help="Model to use. Default: Claude 3.7 Sonnet")
-    run_parser.add_argument("--tools", "-t", help="Tools configuration: path to JSON file, comma-separated names, or inline JSON list")
-    # Trace is implicitly enabled in interactive mode for now
+    run_parser.add_argument("--tools", "-t", help="Tools configuration: path to JSON file, comma-separated names, or inline JSON list. Defaults to calculator tools.")
+    run_parser.add_argument("--trace-dir", help="Directory to save interaction traces (defaults to interaction_traces/)")
+    # Trace is implicitly enabled in interactive mode
     run_parser.set_defaults(func=run_interactive_cli)
     
     args = parser.parse_args()

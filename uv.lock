@@ -418,7 +418,7 @@ wheels = [
 
 [[package]]
 name = "jiki"
-version = "0.0.2"
+version = "0.0.8"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },

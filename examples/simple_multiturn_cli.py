@@ -1,112 +1,48 @@
 #!/usr/bin/env python3
 """
-Simple Multi‑turn CLI using Jiki orchestrator
--------------------------------------------
-This example starts an interactive shell where you can chat with Jiki.
-The orchestrator decides, via the underlying LLM, whether to call tools or
-respond directly. All interaction traces (including tool calls, thoughts, and
-results) are logged to the default `interaction_traces/` directory so they can
-later be used for RL training.
+Minimal example launching Jiki's interactive CLI programmatically via Auto-Discovery
+----------------------------------------------------------------------------------
+This script shows the simplest way to create a Jiki orchestrator 
+using auto-discovery of tools from a server and launch the 
+built-in command-line UI using the `.run_ui()` method.
+
+It uses the default model and discovers tools from the default calculator server.
 
 Run:
-    python examples/simple_multiturn_cli.py --tools add,subtract
-    # or use a JSON file describing tools
-    python examples/simple_multiturn_cli.py --tools tools.json
+    # Ensure the calculator server is runnable from the servers/ directory
+    python examples/simple_multiturn_cli.py
 
-Exit the chat with Ctrl‑D or by typing `exit`.
+Exit the chat with Ctrl-D, Ctrl-C, or by typing `exit`.
 """
 
-import argparse
-import json
-import os
 import sys
 
+# Only need create_jiki from the library
 from jiki import create_jiki
 
-
-def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Simple multi‑turn CLI demonstrating Jiki tool use"
-    )
-    parser.add_argument(
-        "--tools",
-        "-t",
-        help=(
-            "Tools configuration: path to JSON file, comma‑separated names, "
-            "or inline JSON list. Defaults to built‑in calculator tools."
-        ),
-    )
-    parser.add_argument(
-        "--model",
-        "-m",
-        default="anthropic/claude-3-7-sonnet-latest",
-        help="LLM model to use",
-    )
-    parser.add_argument(
-        "--trace-dir",
-        help="Directory where interaction traces will be saved (defaults to interaction_traces/)",
-    )
-    return parser
-
-
-def parse_tools_arg(tools_arg):
-    """Convert CLI `--tools` value to the format expected by create_jiki."""
-    if not tools_arg:
-        return ["add", "subtract", "multiply", "divide"]  # sensible defaults
-
-    # Is it a filepath?
-    if os.path.exists(tools_arg):
-        return tools_arg  # create_jiki will load JSON file
-
-    # Try inline JSON list
-    try:
-        return json.loads(tools_arg)
-    except json.JSONDecodeError:
-        # Fallback: comma‑separated names
-        return tools_arg.split(",")
-
-
-def chat_loop(orchestrator):
-    """Run an interactive chat loop until the user exits."""
-    print("Jiki multi‑turn CLI. Type your message, or 'exit' to quit.")
-    while True:
-        try:
-            user_input = input("You: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print()  # newline after ^C/^D
-            break
-
-        if not user_input or user_input.lower() == "exit":
-            break
-
-        try:
-            response = orchestrator.process(user_input)
-            print(f"Jiki: {response}\n")
-        except Exception as e:
-            print(f"[ERROR] {e}")
-
-    # Save traces (if tracing enabled)
-    try:
-        orchestrator.export_traces(None)  # default path
-    except Exception:
-        pass
-
-
 def main():
-    parser = build_arg_parser()
-    args = parser.parse_args()
+    try:
+        # 1. Create the orchestrator instance using auto-discovery
+        print("[INFO] Using default model and discovering tools from servers/calculator_server.py...", file=sys.stderr)
+        orchestrator = create_jiki(
+            # model="anthropic/claude-3-7-sonnet-latest", # Use default from create_jiki
+            # tools=... # Tools are discovered, so this argument is omitted
+            trace=True, # Interactive mode implies tracing
+            # trace_dir=None, # Use default from create_jiki
+            auto_discover_tools=True, # Discover tools from the server
+            mcp_script_path="servers/calculator_server.py" # Specify the server script path
+        )
 
-    tools_cfg = parse_tools_arg(args.tools)
+        # 2. Launch the built-in CLI frontend
+        orchestrator.run_ui(frontend='cli')
 
-    orchestrator = create_jiki(
-        model=args.model,
-        tools=tools_cfg,
-        trace=True,
-        trace_dir=args.trace_dir,
-    )
-
-    chat_loop(orchestrator)
-
+    except (ValueError, FileNotFoundError, RuntimeError) as e:
+        # Catch errors during orchestrator creation (e.g., discovery failure) or UI launch
+        print(f"[ERROR] Failed to start Jiki: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"[ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main() 
