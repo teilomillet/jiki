@@ -97,12 +97,18 @@ class JikiOrchestrator:
         Orchestrate a single user query, returning the final answer.
         """
         self._last_tool_calls = []
-        if not self._messages:
-            # First turn: push system instructions and tool list
-            self._messages.append({"role": "system", "content": self.build_initial_prompt("")})
 
-        # Append the new user message
-        self._messages.append({"role": "user", "content": user_input})
+        if not self._messages:
+            # FIRST TURN — combine instructions, tool list, *and* initial user question
+            # This avoids injecting a blank "User:" line in the system prompt and eliminates
+            # the need for a second user‑role message.
+            self._messages.append({
+                "role": "system",
+                "content": self.build_initial_prompt(user_input)
+            })
+        else:
+            # SUBSEQUENT TURNS — add the user message as a separate turn
+            self._messages.append({"role": "user", "content": user_input})
 
         # Trim context if oversized based on token count
         while self._num_tokens(self._messages) > max_tokens_ctx and len(self._messages) > 2:
@@ -142,7 +148,7 @@ class JikiOrchestrator:
                     # Log the thought but continue streaming tokens
                     
                 # Check for tool calls
-                call_content, tag = self._extract_tool_call_if_present(combined_output)
+                call_content = self._extract_tool_call_if_present(combined_output)
                 if call_content:
                     tool_call_found = True
                     
@@ -203,82 +209,108 @@ class JikiOrchestrator:
         for pattern in patterns:
             result = re.sub(pattern, "", result, flags=re.DOTALL)
             
-        # The helper string is no longer inserted; keep regex for backward compatibility but it's optional
-        result = re.sub(r"Continue your response based on this result:", "", result)
-            
         # Trim whitespace and normalize newlines
         result = re.sub(r"\n{3,}", "\n\n", result.strip())
         
         return result
 
-    async def _handle_tool_call(self, call_content: str, output_buffer: List[str]):
+    async def _handle_tool_call(self, call_content: str, output_buffer: List[str]) -> str:
         """
         Extract call details, validate, pass to MCP client, inject the result in conversation, and continue generation.
-        Returns the tool result for context continuation.
+        Attempts to robustly parse JSON even if surrounded by extraneous text within the tags.
+        Returns the tool result content (string) for context continuation.
         """
-        print("[DEBUG] Raw tool call content:", call_content)
-        # Attempt to parse tool name and arguments from call_content (assume JSON inside tag)
+        if self.logger:
+            # Use repr() for raw content to show quotes/escapes clearly
+            self.logger.debug(f"Received raw tool call content: {call_content!r}") 
+        
+        # ------------------------------------------------------------------
+        # Parse the JSON payload inside <mcp_tool_call> tags.
+        # Strategy:
+        #   1. First try to parse the entire `call_content` as JSON.
+        #   2. If that fails, look for the first '{' and last '}' and
+        #      attempt to parse that substring as JSON.
+        # This handles cases where the LLM wraps the JSON with explanatory
+        # text while keeping the implementation relatively simple.
+        # ------------------------------------------------------------------
+
+        tool_name: Optional[str] = None
+        arguments: Dict[str, Any] = {}
+
         try:
             tool_call = json.loads(call_content)
+        except json.JSONDecodeError:
+            json_start = call_content.find('{')
+            json_end = call_content.rfind('}')
+            if json_start != -1 and json_end != -1 and json_end > json_start:
+                try:
+                    tool_call = json.loads(call_content[json_start : json_end + 1])
+                except json.JSONDecodeError:
+                    tool_call = {}
+            else:
+                tool_call = {}
+
+        if isinstance(tool_call, dict):
             tool_name = tool_call.get("tool_name")
-            arguments = tool_call.get("arguments", {})
-            print(f"[DEBUG] Parsed tool_name: {tool_name}, arguments: {arguments}")
-        except Exception as e:
-            print(f"[DEBUG] Failed to parse tool call JSON: {e}")
-            tool_name = None
-            arguments = {}
+            raw_args = tool_call.get("arguments", {})
+            arguments = raw_args if isinstance(raw_args, dict) else {}
+
+        # --- Validation Checks ---
         
         if not tool_name:
-            print("[DEBUG] Invalid tool call: missing tool_name")
-            result_block = "<mcp_tool_result>\nERROR: Invalid tool call (missing tool_name)\n</mcp_tool_result>"
-            output_buffer.append(result_block)
+            if self.logger:
+                self.logger.debug(f"Invalid tool call: could not determine 'tool_name' from content: {call_content!r}")
+            result_content = "ERROR: Invalid tool call (missing or malformed JSON 'tool_name')."
+            result_block = f"<mcp_tool_result>\n{result_content}\n</mcp_tool_result>"
             self._log_conversation("system", result_block)
-            return "ERROR: Invalid tool call (missing tool_name)"
-        
+            return result_content
+
         # Validate tool_name exists in tools_config
         tool_schema = next((tool for tool in self.tools_config if tool.get("tool_name") == tool_name), None)
         if not tool_schema:
-            print(f"[DEBUG] Tool '{tool_name}' not found in tools_config")
-            result_block = f"<mcp_tool_result>\nERROR: Tool '{tool_name}' not found.\n</mcp_tool_result>"
-            output_buffer.append(result_block)
+            if self.logger:
+                self.logger.debug(f"Tool '{tool_name}' not found in configured tools.")
+            result_content = f"ERROR: Tool '{tool_name}' not found."
+            result_block = f"<mcp_tool_result>\n{result_content}\n</mcp_tool_result>"
             self._log_conversation("system", result_block)
-            return f"ERROR: Tool '{tool_name}' not found."
-        
+            return result_content
+
         # Validate arguments match expected schema (basic check: required keys)
         expected_args = tool_schema.get("arguments", {})
         missing_args = [k for k in expected_args if k not in arguments]
         if missing_args:
-            print(f"[DEBUG] Missing required arguments: {missing_args}")
-            result_block = f"<mcp_tool_result>\nERROR: Missing required arguments: {', '.join(missing_args)}\n</mcp_tool_result>"
-            output_buffer.append(result_block)
+            if self.logger:
+                self.logger.debug(f"Tool '{tool_name}' called with missing required arguments: {missing_args}")
+            result_content = f"ERROR: Tool '{tool_name}' missing required arguments: {missing_args}"
+            result_block = f"<mcp_tool_result>\n{result_content}\n</mcp_tool_result>"
             self._log_conversation("system", result_block)
-            return f"ERROR: Missing required arguments: {', '.join(missing_args)}"
-        
-        # Call the tool via MCP client
-        try:
-            tool_result = await self.mcp_client.execute_tool_call(tool_name, arguments)
+            return result_content
             
-            # Record tool call for detailed response
-            self._last_tool_calls.append(ToolCall(
-                tool=tool_name,
-                arguments=arguments,
-                result=tool_result
-            ))
+        # --- Execute Tool via MCP Client --- (Unchanged)
+        try:
+            if self.logger:
+                # Use repr() for arguments to show structure clearly
+                self.logger.debug(f"Calling MCP client: tool='{tool_name}', args={arguments!r}")
+            tool_result_content = await self.mcp_client.execute_tool_call(tool_name, arguments)
+            if self.logger:
+                # Use repr() for result to show structure clearly
+                self.logger.debug(f"MCP client result for '{tool_name}': {tool_result_content!r}")
+            # Record this successful call
+            self._last_tool_calls.append(ToolCall(tool_name=tool_name, arguments=arguments, result=str(tool_result_content)))
+            
+            # Format the result for injection
+            result_block = f"<mcp_tool_result>\n{tool_result_content}\n</mcp_tool_result>"
+            self._log_conversation("system", result_block)
+            return str(tool_result_content) # Return the actual result content
             
         except Exception as e:
-            print(f"[DEBUG] Exception during tool call: {e}")
-            tool_result = f"ERROR: Exception during tool call: {e}"
-            # Also record failed tool calls
-            self._last_tool_calls.append(ToolCall(
-                tool=tool_name,
-                arguments=arguments,
-                result=f"ERROR: {e}"
-            ))
-        
-        result_block = f"<mcp_tool_result>\n{tool_result}\n</mcp_tool_result>"
-        output_buffer.append(result_block)
-        self._log_conversation("system", result_block)
-        return tool_result
+            if self.logger:
+                # Log exception info for more details
+                self.logger.debug(f"Error calling tool '{tool_name}' via MCP client: {e}", exc_info=True)
+            result_content = f"ERROR: Failed to execute tool '{tool_name}': {e}"
+            result_block = f"<mcp_tool_result>\n{result_content}\n</mcp_tool_result>"
+            self._log_conversation("system", result_block)
+            return result_content
 
     def _log_conversation(self, role: str, content: str):
         """
@@ -289,19 +321,22 @@ class JikiOrchestrator:
         if self.logger:
             self.logger.log_event(event)
 
-    def _extract_tool_call_if_present(self, text: str) -> Tuple[Optional[str], Optional[str]]:
+    def _extract_tool_call_if_present(self, text: str) -> Optional[str]:
         """
-        Detect a <mcp_tool_call> or <mcp_tool_request> block in text and return its content and tag.
+        Check if a complete <mcp_tool_call>...</mcp_tool_call> block is present.
+        Returns the raw content inside the block if found, otherwise None.
+        The content might contain more than just JSON.
         """
-        patterns = [
-            (r"<mcp_tool_call>(.*?)</mcp_tool_call>", "mcp_tool_call"),
-            (r"<mcp_tool_request>(.*?)</mcp_tool_request>", "mcp_tool_request"),
-        ]
-        for pattern, tag in patterns:
-            match = re.search(pattern, text, flags=re.DOTALL)
-            if match:
-                return match.group(1).strip(), tag
-        return None, None
+        # Regex remains the same, captures everything between tags
+        match = re.search(r"(<mcp_tool_call>)(.*?)(</mcp_tool_call>)", text, re.DOTALL)
+        if match:
+            content = match.group(2)
+            closing_tag = match.group(3)
+            # Basic check: ensure closing tag matches opening tag name conceptually
+            if closing_tag == f"</{match.group(1)[1:-1]}>":
+                # Return raw content; parsing responsibility is in _handle_tool_call
+                return content
+        return None
 
     def _extract_thought_if_present(self, text: str) -> Optional[str]:
         """
