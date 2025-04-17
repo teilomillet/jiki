@@ -19,4 +19,4 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["jiki", "jiki.models", "jiki.tools"]
+packages = ["jiki", "jiki.models", "jiki.tools", "jiki.utils"]

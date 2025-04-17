@@ -28,17 +28,16 @@ Typical Usage
 >>> print(response)
 
 """
-from typing import List, Dict, Any, Optional, Tuple
-import re
-import json
+from typing import List, Dict, Any, Optional
+from jiki.utils.cleaning import clean_output
 from jiki.models.response import ToolCall
-from jiki.prompt_builder import create_available_tools_block, build_initial_prompt
-
-try:
-    # Optional dependency – provides exact token counts for OpenAI models
-    import tiktoken  # type: ignore
-except ImportError:
-    tiktoken = None
+from jiki.utils.prompt import create_available_tools_block, build_initial_prompt
+from jiki.utils.context import trim_context
+from jiki.utils.parsing import extract_tool_call, extract_thought
+from jiki.utils.tool import parse_tool_call_content, validate_tool_call
+from jiki.utils.streaming import generate_and_intercept
+from jiki.utils.token import count_tokens
+from jiki.utils.logging import record_conversation_event
 
 class JikiOrchestrator:
     def __init__(self, model, mcp_client, tools_config: List[Dict[str, Any]], logger=None):
@@ -51,6 +50,8 @@ class JikiOrchestrator:
         self.model = model
         self.mcp_client = mcp_client
         self.tools_config = tools_config
+        # Build a dict mapping tool_name to its schema for fast validation lookups
+        self._tools_map = {tool.get("tool_name"): tool for tool in tools_config}
         self.conversation_history: List[Dict[str, str]] = []
         self.logger = logger
         self._last_tool_calls = []
@@ -87,13 +88,10 @@ class JikiOrchestrator:
             # SUBSEQUENT TURNS — add the user message as a separate turn
             self._messages.append({"role": "user", "content": user_input})
 
-        # Trim context if oversized based on token count
-        while self._num_tokens(self._messages) > max_tokens_ctx and len(self._messages) > 2:
-            # Pop the second message (index 1) – keep system message
-            self._messages.pop(1)
+        # Trim context if oversized based on token count using token_utils
+        trim_context(self._messages, lambda msgs: count_tokens(msgs, self.model.model_name), max_tokens_ctx)
 
-
-        self._log_conversation("system", str(self._messages))
+        record_conversation_event(self.conversation_history, "system", str(self._messages), self.logger)
         final_answer = await self._generate_and_intercept(self._messages)
 
         self._messages.append({"role": "assistant", "content": final_answer})
@@ -101,95 +99,19 @@ class JikiOrchestrator:
 
     async def _generate_and_intercept(self, messages: List[Dict[str, str]]) -> str:
         """
-        Streams tokens from the model and intercepts <mcp_tool_call> or <mcp_tool_request> if encountered.
-        Also captures <Assistant_Thought> blocks for training data.
+        Delegate token streaming and tool-call interception to the shared utility.
         """
-        output_buffer = []
-        # Copy the reference of the running context list so we can mutate it in‑place
-        context = messages
-
-        raw_conversation: List[Dict[str, Any]] = []  # Store complete convo (using strings for content)
-        raw_conversation.append({"role": "system", "content": str(context[0]["content"]) if context else ""})
-        
-        while True:
-            tool_call_found = False
-            thought_found = False
-            async for token in self.model.generate_tokens(context):
-                output_buffer.append(token)
-                combined_output = "".join(output_buffer)
-                
-                # Check for Assistant_Thought blocks
-                thought_content = self._extract_thought_if_present(combined_output)
-                if thought_content and not thought_found:
-                    thought_found = True
-                    # Log the thought but continue streaming tokens
-                    
-                # Check for tool calls
-                call_content = self._extract_tool_call_if_present(combined_output)
-                if call_content:
-                    tool_call_found = True
-                    
-                    # Record the assistant's output up to this point in raw conversation
-                    raw_conversation.append({"role": "assistant", "content": combined_output})
-                    
-                    # Handle the tool call
-                    tool_result = await self._handle_tool_call(call_content, output_buffer)
-                    
-                    # Record the tool result in raw conversation
-                    raw_conversation.append({
-                        "role": "system",
-                        "content": f"<mcp_tool_result>\n{tool_result}\n</mcp_tool_result>"
-                    })
-                    
-                    # Append to the running message context: assistant output so far, then tool result, then an instruction to continue
-                    context.append({"role": "assistant", "content": combined_output})
-                    context.append({"role": "system", "content": f"<mcp_tool_result>\n{tool_result}\n</mcp_tool_result>"})
-                    # No need for a textual nudge; the chat schema will prompt the model to continue
-
-                    output_buffer = []  # reset buffer
-                    break  # restart generation with updated context list
-            
-            if not tool_call_found:
-                # If no tool call was found, add final assistant response to raw conversation
-                raw_conversation.append({"role": "assistant", "content": "".join(output_buffer)})
-                break
-        
-        # Clean the final output to remove MCP-related tags
-        final_output = "".join(output_buffer)
-        clean_output = self._clean_output(final_output)
-        
-        # Log the complete conversation history including all tags for training
-        if self.logger:
-            self.logger.log_complete_trace({
-                "conversation": raw_conversation,
-                "final_clean_output": clean_output,
-                "reward": None
-            })
-        
-        self._log_conversation("assistant", clean_output)
-        return clean_output
-        
-    def _clean_output(self, text: str) -> str:
-        """
-        Clean the output by removing MCP-related tags and formatting for final user display.
-        For training data generation, the original output with tags is preserved in the logs.
-        """
-        # Remove any tool call blocks or tool result blocks
-        patterns = [
-            r"<mcp_tool_call>.*?</mcp_tool_call>",
-            r"<mcp_tool_result>.*?</mcp_tool_result>",
-            r"<mcp_available_tools>.*?</mcp_available_tools>",
-            r"<Assistant_Thought>.*?</Assistant_Thought>",
-        ]
-        
-        result = text
-        for pattern in patterns:
-            result = re.sub(pattern, "", result, flags=re.DOTALL)
-            
-        # Trim whitespace and normalize newlines
-        result = re.sub(r"\n{3,}", "\n\n", result.strip())
-        
-        return result
+        log_complete = self.logger.log_complete_trace if self.logger else None
+        return await generate_and_intercept(
+            generate_tokens_fn=self.model.generate_tokens,
+            handle_tool_call_fn=self._handle_tool_call,
+            extract_tool_call_fn=extract_tool_call,
+            extract_thought_fn=extract_thought,
+            clean_fn=clean_output,
+            log_complete_trace_fn=log_complete,
+            log_conversation_fn=lambda role, content: record_conversation_event(self.conversation_history, role, content, self.logger),
+            context=messages,
+        )
 
     async def _handle_tool_call(self, call_content: str, output_buffer: List[str]) -> str:
         """
@@ -201,72 +123,25 @@ class JikiOrchestrator:
             # Use repr() for raw content to show quotes/escapes clearly
             self.logger.debug(f"Received raw tool call content: {call_content!r}") 
         
-        # ------------------------------------------------------------------
-        # Parse the JSON payload inside <mcp_tool_call> tags.
-        # Strategy:
-        #   1. First try to parse the entire `call_content` as JSON.
-        #   2. If that fails, look for the first '{' and last '}' and
-        #      attempt to parse that substring as JSON.
-        # This handles cases where the LLM wraps the JSON with explanatory
-        # text while keeping the implementation relatively simple.
-        # ------------------------------------------------------------------
-
-        tool_name: Optional[str] = None
-        arguments: Dict[str, Any] = {}
-
-        try:
-            tool_call = json.loads(call_content)
-        except json.JSONDecodeError:
-            json_start = call_content.find('{')
-            json_end = call_content.rfind('}')
-            if json_start != -1 and json_end != -1 and json_end > json_start:
-                try:
-                    tool_call = json.loads(call_content[json_start : json_end + 1])
-                except json.JSONDecodeError:
-                    tool_call = {}
-            else:
-                tool_call = {}
-
-        if isinstance(tool_call, dict):
-            tool_name = tool_call.get("tool_name")
-            raw_args = tool_call.get("arguments", {})
-            arguments = raw_args if isinstance(raw_args, dict) else {}
-
-        # --- Validation Checks ---
-        
-        if not tool_name:
+        # Parse and validate the tool call
+        tool_name, arguments, parse_error = parse_tool_call_content(call_content)
+        if parse_error:
             if self.logger:
-                self.logger.debug(f"Invalid tool call: could not determine 'tool_name' from content: {call_content!r}")
-            result_content = "ERROR: Invalid tool call (missing or malformed JSON 'tool_name')."
-            result_block = f"<mcp_tool_result>\n{result_content}\n</mcp_tool_result>"
-            self._log_conversation("system", result_block)
-            return result_content
+                self.logger.debug(f"Tool call parse error: {parse_error}")
+            record_conversation_event(self.conversation_history, "system", f"<mcp_tool_result>\n{parse_error}\n</mcp_tool_result>", self.logger)
+            return parse_error
 
-        # Validate tool_name exists in tools_config
-        tool_schema = next((tool for tool in self.tools_config if tool.get("tool_name") == tool_name), None)
-        if not tool_schema:
+        # Validate using O(1) schema lookup via tools_map
+        tool_schema, validation_error = validate_tool_call(tool_name, arguments, self._tools_map)
+        if validation_error:
             if self.logger:
-                self.logger.debug(f"Tool '{tool_name}' not found in configured tools.")
-            result_content = f"ERROR: Tool '{tool_name}' not found."
-            result_block = f"<mcp_tool_result>\n{result_content}\n</mcp_tool_result>"
-            self._log_conversation("system", result_block)
-            return result_content
+                self.logger.debug(f"Tool call validation error: {validation_error}")
+            record_conversation_event(self.conversation_history, "system", f"<mcp_tool_result>\n{validation_error}\n</mcp_tool_result>", self.logger)
+            return validation_error
 
-        # Validate arguments match expected schema (basic check: required keys)
-        expected_args = tool_schema.get("arguments", {})
-        missing_args = [k for k in expected_args if k not in arguments]
-        if missing_args:
-            if self.logger:
-                self.logger.debug(f"Tool '{tool_name}' called with missing required arguments: {missing_args}")
-            result_content = f"ERROR: Tool '{tool_name}' missing required arguments: {missing_args}"
-            result_block = f"<mcp_tool_result>\n{result_content}\n</mcp_tool_result>"
-            self._log_conversation("system", result_block)
-            return result_content
-            
-        # --- Execute Tool via MCP Client --- (Unchanged)
+        # --- Execute Tool via MCP Client ---
         try:
             if self.logger:
-                # Use repr() for arguments to show structure clearly
                 self.logger.debug(f"Calling MCP client: tool='{tool_name}', args={arguments!r}")
             tool_result_content = await self.mcp_client.execute_tool_call(tool_name, arguments)
             if self.logger:
@@ -277,7 +152,7 @@ class JikiOrchestrator:
             
             # Format the result for injection
             result_block = f"<mcp_tool_result>\n{tool_result_content}\n</mcp_tool_result>"
-            self._log_conversation("system", result_block)
+            record_conversation_event(self.conversation_history, "system", result_block, self.logger)
             return str(tool_result_content) # Return the actual result content
             
         except Exception as e:
@@ -286,62 +161,5 @@ class JikiOrchestrator:
                 self.logger.debug(f"Error calling tool '{tool_name}' via MCP client: {e}", exc_info=True)
             result_content = f"ERROR: Failed to execute tool '{tool_name}': {e}"
             result_block = f"<mcp_tool_result>\n{result_content}\n</mcp_tool_result>"
-            self._log_conversation("system", result_block)
-            return result_content
-
-    def _log_conversation(self, role: str, content: str):
-        """
-        Record conversation events for debugging or training logs.
-        """
-        event = {"role": role, "content": content}
-        self.conversation_history.append(event)
-        if self.logger:
-            self.logger.log_event(event)
-
-    def _extract_tool_call_if_present(self, text: str) -> Optional[str]:
-        """
-        Check if a complete <mcp_tool_call>...</mcp_tool_call> block is present.
-        Returns the raw content inside the block if found, otherwise None.
-        The content might contain more than just JSON.
-        """
-        # Regex remains the same, captures everything between tags
-        match = re.search(r"(<mcp_tool_call>)(.*?)(</mcp_tool_call>)", text, re.DOTALL)
-        if match:
-            content = match.group(2)
-            closing_tag = match.group(3)
-            # Basic check: ensure closing tag matches opening tag name conceptually
-            if closing_tag == f"</{match.group(1)[1:-1]}>":
-                # Return raw content; parsing responsibility is in _handle_tool_call
-                return content
-        return None
-
-    def _extract_thought_if_present(self, text: str) -> Optional[str]:
-        """
-        Detect an <Assistant_Thought> block in text and return its content.
-        """
-        pattern = r"<Assistant_Thought>(.*?)</Assistant_Thought>"
-        match = re.search(pattern, text, flags=re.DOTALL)
-        if match:
-            return match.group(1).strip()
-        return None 
-
-    # ------------------------------------------------------------------
-    # Helper – estimate prompt length in model tokens so we can trim
-    # context safely.  Uses tiktoken if available; otherwise falls back
-    # to rough character‑based heuristic (≈4 chars per token).
-    # ------------------------------------------------------------------
-    def _num_tokens(self, messages: List[Dict[str, str]]) -> int:
-        if tiktoken is not None:
-            try:
-                enc = tiktoken.encoding_for_model(self.model.model_name)
-            except Exception:
-                enc = tiktoken.get_encoding("cl100k_base")
-
-            tokens = 0
-            for m in messages:
-                # Per OpenAI guide: every message gets <|start|>role\ncontent<|end|>
-                tokens += 4  # rough per‑message overhead
-                tokens += len(enc.encode(m.get("content", "")))
-            return tokens
-        # Fallback – 1 token ≈ 4 chars (very rough)
-        return len(str(messages)) // 4 
+            record_conversation_event(self.conversation_history, "system", result_block, self.logger)
+            return result_content 

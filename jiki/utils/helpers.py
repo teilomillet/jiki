@@ -5,10 +5,10 @@ from typing import TYPE_CHECKING, Any, Optional
 
 # Use TYPE_CHECKING to avoid circular import issues at runtime if Orchestrator type hints are needed
 if TYPE_CHECKING:
-    from .orchestrator import JikiOrchestrator 
-    from .logging import TraceLogger
+    from jiki.orchestrator import JikiOrchestrator
+    from jiki.logging import TraceLogger
 
-from .models.response import DetailedResponse
+from jiki.models.response import DetailedResponse
 
 def _attach_helper_methods(orchestrator: 'JikiOrchestrator', logger: Optional['TraceLogger']):
     """Attach helper methods (sync wrappers, UI launchers, etc.) to the orchestrator instance."""
@@ -61,7 +61,7 @@ def _attach_helper_methods(orchestrator: 'JikiOrchestrator', logger: Optional['T
         if frontend == 'cli':
             try:
                 # Import locally to avoid potential startup cost / circular dependency
-                from .cli import _run_interactive_loop 
+                from jiki.cli import _run_interactive_loop 
                 _run_interactive_loop(self) # Pass the orchestrator instance (self)
             except ImportError:
                 print("[ERROR] Could not import _run_interactive_loop from jiki.cli.", file=sys.stderr)

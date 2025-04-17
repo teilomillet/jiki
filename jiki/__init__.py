@@ -11,7 +11,7 @@ from .logging import TraceLogger
 from .tools.config import load_tools_config
 from .tools.tool import Tool
 from .models.response import DetailedResponse, ToolCall
-from .orchestrator_helpers import _attach_helper_methods
+from .utils.helpers import _attach_helper_methods
 
 # Make the interactive loop function importable if needed elsewhere
 # For now, it's defined in cli.py, so we'll import it within run_ui
