@@ -1,0 +1,14 @@
+site_name: Jiki
+theme:
+  name: material
+plugins:
+  - search
+  - mkdocstrings:            # ← walks your package & renders docs
+      handlers:
+        python:
+          options:
+            merge_init_into_package: true
+nav:
+  - Home: index.md
+  - Reference:
+      - API: reference.md    # will be filled by mkdocstrings 
