@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jiki"
-version = "0.0.6"
+version = "0.0.8"
 description = "A flexible LLM orchestration framework with tool calling capabilities via MCP protocol"
 readme = "README.md"
 requires-python = ">=3.11"

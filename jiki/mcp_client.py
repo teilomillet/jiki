@@ -1,6 +1,49 @@
 from fastmcp import Client
 from typing import Any, List, Dict
 import traceback
+import json
+from datetime import date, datetime # Add datetime imports
+
+# Define a default function for json.dumps
+def json_serializer_default(o: Any) -> Any:
+    """Handles common non-serializable types for json.dumps."""
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()  # Convert datetimes/dates to ISO string
+    elif isinstance(o, set):
+        return list(o)  # Convert sets to lists
+    elif isinstance(o, bytes):
+        try:
+            return o.decode('utf-8') # Try decoding bytes as UTF-8
+        except UnicodeDecodeError:
+            return repr(o) # Fallback for non-UTF8 bytes
+    # Add checks for common patterns in custom objects
+    elif hasattr(o, 'to_dict') and callable(o.to_dict):
+         try:
+             return o.to_dict()
+         except Exception: 
+             pass # Ignore errors from to_dict and try next
+    elif hasattr(o, 'model_dump') and callable(o.model_dump): # Pydantic V2
+         try:
+             return o.model_dump()
+         except Exception:
+             pass # Ignore errors from model_dump and try next
+    elif hasattr(o, 'dict') and callable(o.dict): # Pydantic V1
+         try:
+             return o.dict()
+         except Exception:
+             pass # Ignore errors from dict and try next
+    elif hasattr(o, '__dict__'):
+         # Be cautious with __dict__, might expose too much or fail
+         try:
+             # Filter out non-serializable private/protected attributes if needed
+             # For simplicity, just return the dict for now
+             return o.__dict__ 
+         except Exception:
+             pass # Ignore errors from __dict__
+             
+    # Final fallback for any other type: return its representation string
+    # This prevents the TypeError from stopping serialization
+    return repr(o)
 
 class MCPClient:
     def __init__(self, connection: str):
@@ -12,20 +55,35 @@ class MCPClient:
     async def execute_tool_call(self, tool_name: str, arguments: dict) -> str:
         """
         Call a tool on the connected MCP server and return the result as a string.
+        Complex results (lists, dicts) are serialized as JSON using a custom encoder.
         """
         async with Client(self.connection) as client:
             result = await client.call_tool(tool_name, arguments)
             
             # Handle different response formats
+            processed_result: Any
             if hasattr(result, 'content'):
-                # Object with content attribute
-                return result.content[0].text if result.content else ""
-            elif isinstance(result, list):
-                # List response format
-                return result[0].text if result and hasattr(result[0], 'text') else str(result)
+                # If multiple content blocks, maybe serialize all? For now, take first.
+                # If the content itself is complex, it will be handled below.
+                processed_result = result.content[0].text if result.content else None
             else:
-                # Fallback for any other format
-                return str(result)
+                # Use the raw result if it's not a fastmcp ToolResult object
+                processed_result = result
+
+            # Serialize non-string results to JSON for clarity
+            if isinstance(processed_result, str):
+                return processed_result # Return strings directly
+            elif processed_result is None:
+                return "" # Return empty string for None result
+            else:
+                try:
+                    # Serialize lists, dicts, bools, numbers, etc. to JSON
+                    # Use the custom default function here!
+                    return json.dumps(processed_result, default=json_serializer_default)
+                except TypeError as e:
+                    # This fallback should now be much rarer
+                    print(f"[WARN] Could not JSON-serialize result type {type(processed_result)} even with custom serializer, falling back to str(): {e}")
+                    return str(processed_result)
 
 
 # MCP wrapper to handle errors and ensure proper MCP formatting 
@@ -121,7 +179,6 @@ class EnhancedMCPClient:
             "tool_name": tool_name,
             "arguments": arguments
         }
-        import json
         formatted_tool_call = json.dumps(tool_call_json, indent=2)
         mcp_tool_call = f"<mcp_tool_call>\n{formatted_tool_call}\n</mcp_tool_call>"
         
