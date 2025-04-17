@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from .orchestrator import JikiOrchestrator 
     from .logging import TraceLogger
 
-from .models.response import DetailedResponse, ToolCall
+from .models.response import DetailedResponse
 
 def _attach_helper_methods(orchestrator: 'JikiOrchestrator', logger: Optional['TraceLogger']):
     """Attach helper methods (sync wrappers, UI launchers, etc.) to the orchestrator instance."""
@@ -21,13 +21,8 @@ def _attach_helper_methods(orchestrator: 'JikiOrchestrator', logger: Optional['T
     # --- Synchronous `process` wrapper ---
     def process(self: 'JikiOrchestrator', user_input: str) -> str:
         """Synchronous wrapper for process_user_input."""
-        try:
-            loop = asyncio.get_running_loop()
-            # If a loop is running, should we create a task? 
-            # asyncio.run() handles loop creation/management. Sticking with that.
-            return asyncio.run(self.process_user_input(user_input))
-        except RuntimeError: # No running event loop
-            return asyncio.run(self.process_user_input(user_input))
+        # asyncio.run handles loop creation/management.
+        return asyncio.run(self.process_user_input(user_input))
 
     # --- Async `process_detailed` ---
     async def process_detailed_async(self: 'JikiOrchestrator', user_input: str) -> DetailedResponse:
@@ -50,11 +45,8 @@ def _attach_helper_methods(orchestrator: 'JikiOrchestrator', logger: Optional['T
     # --- Synchronous `process_detailed` wrapper ---
     def process_detailed(self: 'JikiOrchestrator', user_input: str) -> DetailedResponse:
         """Synchronous wrapper for process_detailed_async."""
-        try:
-            loop = asyncio.get_running_loop()
-            return asyncio.run(self.process_detailed_async(user_input))
-        except RuntimeError: # No running event loop
-            return asyncio.run(self.process_detailed_async(user_input))
+        # asyncio.run handles loop creation/management.
+        return asyncio.run(self.process_detailed_async(user_input))
 
     # --- Trace Export ---
     def export_traces(self: 'JikiOrchestrator', filepath: Optional[str] = None):

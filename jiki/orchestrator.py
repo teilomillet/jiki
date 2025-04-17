@@ -109,7 +109,6 @@ class JikiOrchestrator:
             # Pop the second message (index 1) – keep system message
             self._messages.pop(1)
 
-        prompt = ""  # not used any more downstream, but left for logging
 
         self._log_conversation("system", str(self._messages))
         final_answer = await self._generate_and_intercept(self._messages)
@@ -231,7 +230,7 @@ class JikiOrchestrator:
         
         if not tool_name:
             print("[DEBUG] Invalid tool call: missing tool_name")
-            result_block = f"<mcp_tool_result>\nERROR: Invalid tool call (missing tool_name)\n</mcp_tool_result>"
+            result_block = "<mcp_tool_result>\nERROR: Invalid tool call (missing tool_name)\n</mcp_tool_result>"
             output_buffer.append(result_block)
             self._log_conversation("system", result_block)
             return "ERROR: Invalid tool call (missing tool_name)"
