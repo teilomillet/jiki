@@ -1,5 +1,5 @@
 from fastmcp import Client
-from typing import Any
+from typing import Any, List, Dict
 import traceback
 
 class MCPClient:
@@ -54,6 +54,64 @@ class EnhancedMCPClient:
         else:
             raise ValueError(f"Unsupported transport type: {transport_type}")
         
+    async def discover_tools(self) -> List[Dict[str, Any]]:
+        """
+        Connect to the MCP server and retrieve the list of available tool schemas.
+        
+        Returns:
+            List[Dict[str, Any]]: A list of tool schema dictionaries.
+            
+        Raises:
+            RuntimeError: If the connection or tool discovery fails.
+        """
+        print("[INFO] Attempting to discover tools from MCP server...")
+        # We need to use the underlying transport configuration from the MCPClient
+        # that EnhancedMCPClient wraps. Let's access it directly.
+        transport = self.mcp_client.connection # Access the transport/connection string
+        
+        try:
+            # Create a standard fastmcp Client using the same transport
+            async with Client(transport) as client:
+                # List available tools using the standard client method
+                tool_list = await client.list_tools()
+                
+                # The tool_list likely contains Tool objects (or similar structures from fastmcp)
+                # We need to convert them into the dictionary format expected by JikiOrchestrator.
+                # Assuming tool_list is a list of objects with attributes like name, description, inputSchema.
+                # The exact structure depends on fastmcp's return type for list_tools.
+                # Let's assume a simple structure for now. We might need to adjust based on fastmcp specifics.
+                
+                tools_config = []
+                for tool in tool_list:
+                    # Basic conversion - might need refinement based on actual Tool object structure
+                    schema = {
+                        "tool_name": getattr(tool, 'name', None),
+                        "description": getattr(tool, 'description', ''),
+                        "arguments": getattr(tool, 'inputSchema', {}).get('properties', {}) 
+                        # TODO: Handle 'required' fields if available in inputSchema
+                        # TODO: Deeper validation of the schema structure might be needed
+                    }
+                    if schema["tool_name"]:
+                         # Add required field if present in the original schema
+                         if 'required' in getattr(tool, 'inputSchema', {}):
+                              schema['required'] = getattr(tool, 'inputSchema', {})['required']
+                         tools_config.append(schema)
+                    else:
+                         print(f"[WARN] Discovered tool object missing 'name': {tool}")
+
+                print(f"[INFO] Discovered {len(tools_config)} tools.")
+                return tools_config
+
+        except ConnectionRefusedError as e:
+            print(f"[ERROR] Connection refused when trying to discover tools: {e}")
+            raise RuntimeError(f"MCP Server connection refused at {transport}") from e
+        except Exception as e:
+            # Catch other potential errors (e.g., server not running, protocol errors)
+            print(f"[ERROR] Failed to discover tools from MCP server: {e}")
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f"Failed to discover tools from MCP server: {e}") from e
+
     async def execute_tool_call(self, tool_name: str, arguments: dict) -> str:
         """
         Execute a tool call using MCP with proper formatting and error handling

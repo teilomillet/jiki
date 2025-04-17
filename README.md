@@ -9,7 +9,7 @@ Jiki provides a clean interface for building AI assistants that can use tools to
 ## Features
 
 - Seamless integration with LiteLLM for support of multiple LLM providers
-- Tool calling through FastMCP infrastructure
+- Tool calling through FastMCP infrastructure (manual config or auto-discovery)
 - Flexible MCP client with multiple transport options (stdio, SSE)
 - Structured conversation logging for training data generation
 - Simple CLI interface for interactive use
@@ -25,11 +25,21 @@ uv add jiki
 from jiki import create_jiki
 
 # Create a pre‑configured orchestrator with sensible defaults
+# Option 1: Provide tool schemas manually
+# orchestrator = create_jiki(
+#     model="anthropic/claude-3-7-sonnet-latest",
+#     # Path to a JSON file that describes your tools (see below)
+#     tools="tools.json", 
+#     mcp_mode="stdio", # Use stdio for a local FastMCP server script
+#     mcp_script_path="path/to/your/server.py" 
+# )
+
+# Option 2: Auto-discover tools from a running FastMCP server
 orchestrator = create_jiki(
     model="anthropic/claude-3-7-sonnet-latest",
-    # Path to a JSON file that describes your tools (see below)
-    tools="tools.json",
-    mcp_mode="stdio"  # or "sse" to connect to a remote FastMCP server
+    auto_discover_tools=True,  # Discover tools from the server
+    mcp_mode="stdio",          # Transport mode ('stdio' or 'sse')
+    mcp_script_path="servers/calculator_server.py" # Path to server script (or URL for SSE)
 )
 
 # Process a user query (synchronous helper available)
@@ -66,9 +76,10 @@ orchestrator.export_traces("interaction_traces/session.jsonl")
 Tools are defined in JSON format and implemented using FastMCP:
 
 ```json
-{
-  "tool_name": "add",
-  "description": "Add two numbers",
+[
+  {
+    "tool_name": "add",
+    "description": "Add two numbers",
   "arguments": {
     "a": {"type": "integer", "description": "First number"},
     "b": {"type": "integer", "description": "Second number"}
@@ -76,7 +87,7 @@ Tools are defined in JSON format and implemented using FastMCP:
 }
 ```
 
-Server implementation:
+Server implementation (`servers/calculator_server.py`):
 
 ```python
 from fastmcp import FastMCP
