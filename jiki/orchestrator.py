@@ -32,6 +32,7 @@ from typing import List, Dict, Any
 from jiki.utils.cleaning import clean_output
 from jiki.models.response import ToolCall
 from jiki.utils.prompt import create_available_tools_block, build_initial_prompt
+from jiki.tool_client import IToolClient
 from jiki.utils.context import trim_context
 from jiki.utils.parsing import extract_tool_call, extract_thought
 from jiki.utils.tool import parse_tool_call_content, validate_tool_call
@@ -40,10 +41,23 @@ from jiki.utils.token import count_tokens
 from jiki.utils.logging import record_conversation_event
 
 class JikiOrchestrator:
-    def __init__(self, model, mcp_client, tools_config: List[Dict[str, Any]], logger=None):
+    """
+    Central orchestration engine for Jiki, managing LLM messages, tool/resource calls, and conversation context.
+
+    Example:
+        >>> from jiki import create_jiki
+        >>> orchestrator = create_jiki(
+        ...     model="anthropic/claude-3-7-sonnet", 
+        ...     tools=None, 
+        ...     mcp_mode="stdio"
+        ... )
+        >>> result = orchestrator.process("What is 2 + 3?")
+        >>> print(result)
+    """
+    def __init__(self, model: Any, mcp_client: IToolClient, tools_config: List[Dict[str, Any]], logger=None):
         """
         :param model: LLM model wrapper (e.g., LiteLLMModel)
-        :param mcp_client: MCPClient instance
+        :param mcp_client: Tool client implementing IToolClient interface
         :param tools_config: List of available tool schemas
         :param logger: Optional logger for trace events
         """

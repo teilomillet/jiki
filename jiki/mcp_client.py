@@ -1,10 +1,21 @@
 from fastmcp import Client
+from jiki.transports.factory import ITransport, get_transport  # Transport interface and factory
+from jiki.tool_client import IToolClient
 from typing import Any, List, Dict
 import traceback
 import json
 from jiki.utils.helpers import json_serializer_default
 
 class MCPClient:
+    """
+    Low-level MCP client for direct tool invocation over a given transport.
+
+    Example:
+        # Using stdio transport to a local Python server
+        from fastmcp.client.transports import PythonStdioTransport
+        client = MCPClient(PythonStdioTransport('servers/calculator_server.py'))
+        result = await client.execute_tool_call('add', {'a': 2, 'b': 3})
+    """
     def __init__(self, connection: str):
         """
         :param connection: Connection string or transport for MCP server (e.g., 'python servers/calculator_server.py' or 'http://localhost:8000/mcp')
@@ -48,30 +59,53 @@ class MCPClient:
 
 
 # MCP wrapper to handle errors and ensure proper MCP formatting 
-class EnhancedMCPClient:
-    """Enhanced MCP client that ensures proper XML tagging and error handling"""
-    
-    def __init__(self, transport_type="stdio", script_path=None):
+class EnhancedMCPClient(IToolClient):
+    """
+    Enhanced MCP client that ensures proper XML tagging and error handling.
+
+    Example usage:
+        import asyncio
+        from jiki.mcp_client import EnhancedMCPClient
+
+        async def demo():
+            client = EnhancedMCPClient(
+                transport_type="stdio",
+                script_path="servers/calculator_server.py"
+            )
+            tools = await client.discover_tools()
+            result = await client.execute_tool_call("add", {"a": 1, "b": 2})
+            resources = await client.list_resources()
+            contents = await client.read_resource("file:///path/to/data.txt")
+            traces = client.get_interaction_traces()
+            print(tools, result, resources, contents, traces)
+
+        asyncio.run(demo())
+    """
+    def __init__(self, transport_type: str = "stdio", script_path: str = None, transport: ITransport = None):
         """
         Initialize the enhanced MCP client with configurable transport
         
         :param transport_type: Type of transport to use ("stdio" or "sse")
         :param script_path: Path to the MCP server script or URL for SSE
+        :param transport: Optional pre-created ITransport instance to inject.
+
+        Example:
+            client = EnhancedMCPClient(
+                transport_type="sse",
+                script_path="http://localhost:8000/mcp"
+            )
         """
         self.transport_type = transport_type
         self.script_path = script_path or "servers/calculator_server.py"
-        self.interaction_traces = []
+        self.interaction_traces: List[Dict[str, Any]] = []
         
-        # Create the primary MCP client
-        if transport_type == "stdio":
-            from fastmcp.client.transports import PythonStdioTransport
-            self.mcp_client = MCPClient(PythonStdioTransport(self.script_path))
-        elif transport_type == "sse":
-            from fastmcp.client.transports import SSETransport
-            sse_url = script_path or "http://localhost:6277/mcp"
-            self.mcp_client = MCPClient(SSETransport(sse_url))
+        # Allow injecting a custom transport instance directly, otherwise use factory
+        if transport is not None:
+            selected_transport = transport
         else:
-            raise ValueError(f"Unsupported transport type: {transport_type}")
+            selected_transport = get_transport(transport_type, script_path)
+        # Create the primary MCP client
+        self.mcp_client = MCPClient(selected_transport)
         
         # Track whether handshake has been performed
         self._initialized = False
@@ -81,10 +115,10 @@ class EnhancedMCPClient:
         Connect to the MCP server and retrieve the list of available tool schemas.
         
         Returns:
-            List[Dict[str, Any]]: A list of tool schema dictionaries.
-            
-        Raises:
-            RuntimeError: If the connection or tool discovery fails.
+            List[Dict[str, Any]]: List of tool schema dicts.
+
+        Example:
+            tools = await client.discover_tools()
         """
         # Perform initialization handshake once
         if not self._initialized:
@@ -140,6 +174,15 @@ class EnhancedMCPClient:
     async def execute_tool_call(self, tool_name: str, arguments: dict) -> str:
         """
         Execute a tool call using MCP with proper formatting and error handling
+
+        :param tool_name: Name of the tool to invoke.
+        :param arguments: Dict of arguments for the tool.
+        :return: String result or JSON error payload.
+
+        Example:
+            result = await client.execute_tool_call(
+                "weather", {"city": "Paris"}
+            )
         """
         # Ensure initialization handshake has run
         if not self._initialized:
@@ -195,7 +238,11 @@ class EnhancedMCPClient:
             return error_json
 
     def get_interaction_traces(self):
-        """Return all logged interaction traces for training data generation."""
+        """
+        Return all logged interaction traces for debugging and analysis.
+
+        :return: List of trace dicts containing calls, results, and handshake info.
+        """
         return self.interaction_traces 
 
     async def initialize(self, protocol_version: str = "2025-03-26",
@@ -203,6 +250,10 @@ class EnhancedMCPClient:
                           client_info: Dict[str, str] = None) -> None:
         """
         Perform MCP initialize/initialized handshake, exposing its JSON-RPC payloads in logs and traces.
+
+        :param protocol_version: Protocol version identifier.
+        :param capabilities: Additional capabilities to negotiate.
+        :param client_info: Client metadata dict with 'name' and 'version'.
         """
         # Default capabilities
         default_caps = {
