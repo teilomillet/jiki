@@ -28,10 +28,10 @@ Typical Usage
 >>> print(response)
 
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from jiki.utils.cleaning import clean_output
 from jiki.models.response import ToolCall
-from jiki.utils.prompt import create_available_tools_block, build_initial_prompt
+from jiki.prompt_builder import IPromptBuilder, DefaultPromptBuilder
 from jiki.tool_client import IToolClient
 from jiki.utils.context import trim_context
 from jiki.utils.parsing import extract_tool_call, extract_thought
@@ -54,18 +54,28 @@ class JikiOrchestrator:
         >>> result = orchestrator.process("What is 2 + 3?")
         >>> print(result)
     """
-    def __init__(self, model: Any, mcp_client: IToolClient, tools_config: List[Dict[str, Any]], logger=None):
+    def __init__(
+        self,
+        model: Any,
+        mcp_client: IToolClient,
+        tools_config: List[Dict[str, Any]],
+        logger=None,
+        prompt_builder: IPromptBuilder = None
+    ):
         """
         :param model: LLM model wrapper (e.g., LiteLLMModel)
         :param mcp_client: Tool client implementing IToolClient interface
         :param tools_config: List of available tool schemas
         :param logger: Optional logger for trace events
+        :param prompt_builder: Prompt builder abstraction (delegates prompt template generation)
         """
         self.model = model
         self.mcp_client = mcp_client
         self.tools_config = tools_config
         # Build a dict mapping tool_name to its schema for fast validation lookups
         self._tools_map = {tool.get("tool_name"): tool for tool in tools_config}
+        # Prompt builder abstraction (delegates prompt template generation)
+        self.prompt_builder: IPromptBuilder = prompt_builder or DefaultPromptBuilder()
         self.conversation_history: List[Dict[str, str]] = []
         self.logger = logger
         self._last_tool_calls = []
@@ -76,13 +86,21 @@ class JikiOrchestrator:
         """
         Format a block describing the available tools (e.g., <mcp_available_tools> ... </mcp_available_tools>).
         """
-        return create_available_tools_block(self.tools_config)
+        return self.prompt_builder.create_available_tools_block(self.tools_config)
 
-    def build_initial_prompt(self, user_input: str, resources_config: List[Dict[str, Any]] = []) -> str:
+    def build_initial_prompt(
+        self,
+        user_input: str,
+        resources_config: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
         """
         Build the initial prompt for the LLM, including user input and available tools.
         """
-        return build_initial_prompt(user_input, self.tools_config, resources_config)
+        return self.prompt_builder.build_initial_prompt(
+            user_input,
+            self.tools_config,
+            resources_config
+        )
 
     async def process_user_input(self, user_input: str, max_tokens_ctx: int = 6000) -> str:
         """
