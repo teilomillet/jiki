@@ -1,5 +1,5 @@
 from typing import Protocol, List, Dict, Any
-from jiki.resource_manager import IResourceManager
+from jiki.resources.resource_manager import IResourceManager
 
 
 class IToolClient(Protocol):

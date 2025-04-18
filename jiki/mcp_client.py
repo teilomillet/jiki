@@ -4,7 +4,7 @@ from jiki.tool_client import IToolClient
 from typing import Any, List, Dict
 import traceback
 import json
-from jiki.utils.helpers import json_serializer_default
+from jiki.serialization.helpers import json_serializer_default
 from pathlib import Path
 
 class MCPClient:

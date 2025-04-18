@@ -31,7 +31,7 @@ Typical Usage
 from typing import List, Dict, Any, Optional
 from jiki.utils.cleaning import clean_output
 from jiki.models.response import ToolCall
-from jiki.prompt_builder import IPromptBuilder, DefaultPromptBuilder
+from jiki.prompts.prompt_builder import IPromptBuilder, DefaultPromptBuilder
 from jiki.tool_client import IToolClient
 from jiki.utils.context import trim_context
 from jiki.utils.parsing import extract_tool_call, extract_thought

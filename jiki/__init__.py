@@ -11,10 +11,10 @@ from .logging import TraceLogger
 from .tools.config import load_tools_config
 from .tools.tool import Tool
 from .models.response import DetailedResponse, ToolCall
-from .utils.helpers import _attach_helper_methods
+from .serialization.helpers import _attach_helper_methods
 from .sampling import ISamplerConfig, SamplerConfig
-from .conversation_root_manager import IConversationRootManager
-from .root_manager import IRootManager
+from .roots.conversation_root_manager import IConversationRootManager
+from .roots.root_manager import IRootManager
 
 # Make the interactive loop function importable if needed elsewhere
 # For now, it's defined in cli.py, so we'll import it within run_ui
