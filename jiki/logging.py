@@ -26,6 +26,13 @@ class TraceLogger:
         """
         self.events.append(event)
         
+    def debug(self, message: str, **kwargs):
+        """Log a debug message (currently prints to stderr)."""
+        # Simple implementation: print to stderr
+        # Could be expanded to use Python's logging module later
+        import sys
+        print(f"[DEBUG] {message}", file=sys.stderr)
+        
     def log_complete_trace(self, trace_data: Dict[str, Any]):
         """
         Log a complete interaction trace suitable for training data generation.

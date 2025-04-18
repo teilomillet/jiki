@@ -133,4 +133,32 @@ Use **MCPClient** if you need fine‑grained control or are building new transpo
 - **Advanced tracing**: Automatically logs every handshake, call, and result for deep inspection.
 - **Error resilience**: Catches and formats JSON‑RPC errors, falling back to human‑readable messages.
 
-With `EnhancedMCPClient`, you get a robust MCP implementation in a few lines—yet every stage is pluggable when you need custom behavior. 
+With `EnhancedMCPClient`, you get a robust MCP implementation in a few lines—yet every stage is pluggable when you need custom behavior.
+
+```python
+# Easy to learn: default orchestrator creation and simple query
+from jiki import create_jiki
+
+orchestrator = create_jiki(
+    auto_discover_tools=True,
+    mcp_script_path="servers/calculator_server.py"
+)
+response = orchestrator.process("What is 2 + 2?")
+print(response)
+```
+
+```python
+# Hard to master: advanced customization with SSE transport and sampling parameters
+from jiki import create_jiki, SamplerConfig
+
+orchestrator = create_jiki(
+    model="gpt-4",
+    auto_discover_tools=True,
+    mcp_mode="sse",
+    mcp_script_path="https://example.com/mcp",
+    sampler_config=SamplerConfig(temperature=0.2, top_p=0.5, max_tokens=100),
+    trace=True
+)
+detailed = orchestrator.process_detailed("List all available tools.")
+print("Result:", detailed.result)
+print("Tool Calls:", [tc.tool_name for tc in detailed.tool_calls]) 

@@ -60,7 +60,7 @@ class JikiOrchestrator:
         mcp_client: IMCPClient,
         tools_config: List[Dict[str, Any]],
         logger=None,
-        prompt_builder: IPromptBuilder = None
+        prompt_builder: Optional[IPromptBuilder] = None
     ):
         """
         :param model: LLM model wrapper (e.g., LiteLLMModel)
@@ -73,7 +73,7 @@ class JikiOrchestrator:
         self.mcp_client = mcp_client
         self.tools_config = tools_config
         # Build a dict mapping tool_name to its schema for fast validation lookups
-        self._tools_map = {tool.get("tool_name"): tool for tool in tools_config}
+        self._tools_map = {name: tool for tool in tools_config if (name := tool.get("tool_name")) is not None}
         # Prompt builder abstraction (delegates prompt template generation)
         self.prompt_builder: IPromptBuilder = prompt_builder or DefaultPromptBuilder()
         self.conversation_history: List[Dict[str, str]] = []
@@ -115,7 +115,7 @@ class JikiOrchestrator:
                 resources_config = await self.mcp_client.list_resources()
             except Exception:
                 pass  # proceed even if resources fetch fails
-            initial_content = self.build_initial_prompt(user_input, self.tools_config, resources_config)
+            initial_content = self.build_initial_prompt(user_input, resources_config)
             self._messages.append({
                 "role": "system",
                 "content": initial_content
@@ -138,8 +138,18 @@ class JikiOrchestrator:
         Delegate token streaming and tool-call interception to the shared utility.
         """
         log_complete = self.logger.log_complete_trace if self.logger else None
+
+        # For Anthropic-based LLMs, convert the initial 'system' message into a 'user' role
+        def token_generator_with_system_as_user(ctx_msgs):
+            adapted = []
+            for m in ctx_msgs:
+                if m.get('role') == 'system':
+                    adapted.append({'role': 'user', 'content': m.get('content', '')})
+                else:
+                    adapted.append(m)
+            return self.model.generate_tokens(adapted)
         return await generate_and_intercept(
-            generate_tokens_fn=self.model.generate_tokens,
+            generate_tokens_fn=token_generator_with_system_as_user,
             handle_tool_call_fn=self._handle_tool_call,
             extract_tool_call_fn=extract_tool_call,
             extract_thought_fn=extract_thought,
@@ -167,6 +177,9 @@ class JikiOrchestrator:
             record_conversation_event(self.conversation_history, "system", f"<mcp_tool_result>\n{parse_error}\n</mcp_tool_result>", self.logger)
             return parse_error
 
+        # Assert tool_name is not None if parse_error is None
+        assert tool_name is not None, "tool_name should not be None if parse_error is None"
+
         # Validate using O(1) schema lookup via tools_map
         tool_schema, validation_error = validate_tool_call(tool_name, arguments, self._tools_map)
         if validation_error:
@@ -179,12 +192,14 @@ class JikiOrchestrator:
         try:
             if self.logger:
                 self.logger.debug(f"Calling MCP client: tool='{tool_name}', args={arguments!r}")
+            # Assert tool_name is not None before passing to client
+            assert tool_name is not None, "tool_name should not be None at this point"
             tool_result_content = await self.mcp_client.execute_tool_call(tool_name, arguments)
             if self.logger:
                 # Use repr() for result to show structure clearly
                 self.logger.debug(f"MCP client result for '{tool_name}': {tool_result_content!r}")
-            # Record this successful call
-            self._last_tool_calls.append(ToolCall(tool_name=tool_name, arguments=arguments, result=str(tool_result_content)))
+            # Record this successful call using the correct argument name 'tool'
+            self._last_tool_calls.append(ToolCall(tool=tool_name, arguments=arguments, result=str(tool_result_content)))
             
             # Format the result for injection
             result_block = f"<mcp_tool_result>\n{tool_result_content}\n</mcp_tool_result>"

@@ -39,6 +39,16 @@ class MCPClient:
                     processed_result = ''.join(block.text for block in result.content)
                 else:
                     processed_result = None
+            elif isinstance(result, list):
+                # If we receive a list of blocks (e.g., dicts with 'text'), join their text
+                try:
+                    processed_result = ''.join(
+                        getattr(block, 'text', block.get('text', ''))
+                        if isinstance(block, (dict, object)) else ''
+                        for block in result
+                    )
+                except Exception:
+                    processed_result = result
             else:
                 # Use the raw result if it's not a fastmcp ToolResult object
                 processed_result = result
@@ -177,13 +187,13 @@ class EnhancedMCPClient(IToolClient):
                 return tools_config
 
         except ConnectionRefusedError as e:
-            print(f"[ERROR] Connection refused when trying to discover tools: {e}")
+            # Handle connection refused specifically
             raise RuntimeError(f"MCP Server connection refused at {transport}") from e
         except Exception as e:
             # Catch other potential errors (e.g., server not running, protocol errors)
-            print(f"[ERROR] Failed to discover tools from MCP server: {e}")
-            import traceback
-            traceback.print_exc()
+            # Do not print error here; let the caller handle the RuntimeError
+            # import traceback
+            # traceback.print_exc() # Optionally uncomment for deep debugging
             raise RuntimeError(f"Failed to discover tools from MCP server: {e}") from e
 
     async def execute_tool_call(self, tool_name: str, arguments: dict) -> str:
@@ -215,6 +225,21 @@ class EnhancedMCPClient(IToolClient):
             
             # Execute the tool call via MCP infrastructure
             result = await self.mcp_client.execute_tool_call(tool_name, arguments)
+            
+            # If we got back a JSON array of text blocks, extract and concatenate their 'text' fields
+            if isinstance(result, str) and result.strip().startswith('['):
+                try:
+                    blocks = json.loads(result)
+                    if isinstance(blocks, list):
+                        text_parts = []
+                        for blk in blocks:
+                            if isinstance(blk, dict) and 'text' in blk:
+                                text_parts.append(blk['text'])
+                        # Replace result with joined text
+                        result = ''.join(text_parts)
+                except Exception:
+                    # Leave result unchanged if parsing fails
+                    pass
             
             # Format as MCP tool result
             mcp_tool_result = f"<mcp_tool_result>\n{result}\n</mcp_tool_result>"

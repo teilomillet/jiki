@@ -1,5 +1,5 @@
 from typing import Protocol, List, Dict, Any, Optional
-from jiki.utils.prompt import (
+from jiki.prompts.utils import (
     create_available_tools_block,
     create_available_resources_block,
     build_initial_prompt as utils_build_initial_prompt,
