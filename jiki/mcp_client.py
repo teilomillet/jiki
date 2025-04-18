@@ -2,48 +2,7 @@ from fastmcp import Client
 from typing import Any, List, Dict
 import traceback
 import json
-from datetime import date, datetime # Add datetime imports
-
-# Define a default function for json.dumps
-def json_serializer_default(o: Any) -> Any:
-    """Handles common non-serializable types for json.dumps."""
-    if isinstance(o, (datetime, date)):
-        return o.isoformat()  # Convert datetimes/dates to ISO string
-    elif isinstance(o, set):
-        return list(o)  # Convert sets to lists
-    elif isinstance(o, bytes):
-        try:
-            return o.decode('utf-8') # Try decoding bytes as UTF-8
-        except UnicodeDecodeError:
-            return repr(o) # Fallback for non-UTF8 bytes
-    # Add checks for common patterns in custom objects
-    elif hasattr(o, 'to_dict') and callable(o.to_dict):
-         try:
-             return o.to_dict()
-         except Exception: 
-             pass # Ignore errors from to_dict and try next
-    elif hasattr(o, 'model_dump') and callable(o.model_dump): # Pydantic V2
-         try:
-             return o.model_dump()
-         except Exception:
-             pass # Ignore errors from model_dump and try next
-    elif hasattr(o, 'dict') and callable(o.dict): # Pydantic V1
-         try:
-             return o.dict()
-         except Exception:
-             pass # Ignore errors from dict and try next
-    elif hasattr(o, '__dict__'):
-         # Be cautious with __dict__, might expose too much or fail
-         try:
-             # Filter out non-serializable private/protected attributes if needed
-             # For simplicity, just return the dict for now
-             return o.__dict__ 
-         except Exception:
-             pass # Ignore errors from __dict__
-             
-    # Final fallback for any other type: return its representation string
-    # This prevents the TypeError from stopping serialization
-    return repr(o)
+from jiki.utils.helpers import json_serializer_default
 
 class MCPClient:
     def __init__(self, connection: str):
@@ -63,9 +22,11 @@ class MCPClient:
             # Handle different response formats
             processed_result: Any
             if hasattr(result, 'content'):
-                # If multiple content blocks, maybe serialize all? For now, take first.
-                # If the content itself is complex, it will be handled below.
-                processed_result = result.content[0].text if result.content else None
+                # If multiple content blocks, concatenate all text blocks
+                if result.content:
+                    processed_result = ''.join(block.text for block in result.content)
+                else:
+                    processed_result = None
             else:
                 # Use the raw result if it's not a fastmcp ToolResult object
                 processed_result = result
@@ -112,6 +73,9 @@ class EnhancedMCPClient:
         else:
             raise ValueError(f"Unsupported transport type: {transport_type}")
         
+        # Track whether handshake has been performed
+        self._initialized = False
+
     async def discover_tools(self) -> List[Dict[str, Any]]:
         """
         Connect to the MCP server and retrieve the list of available tool schemas.
@@ -122,6 +86,9 @@ class EnhancedMCPClient:
         Raises:
             RuntimeError: If the connection or tool discovery fails.
         """
+        # Perform initialization handshake once
+        if not self._initialized:
+            await self.initialize()
         print("[INFO] Attempting to discover tools from MCP server...")
         # We need to use the underlying transport configuration from the MCPClient
         # that EnhancedMCPClient wraps. Let's access it directly.
@@ -174,6 +141,9 @@ class EnhancedMCPClient:
         """
         Execute a tool call using MCP with proper formatting and error handling
         """
+        # Ensure initialization handshake has run
+        if not self._initialized:
+            await self.initialize()
         # Format the tool call into proper MCP format for logging
         tool_call_json = {
             "tool_name": tool_name,
@@ -204,22 +174,67 @@ class EnhancedMCPClient:
             # Log the error details
             error_details = traceback.format_exc()
             print(f"[ERROR] MCP tool call failed: {e}\n{error_details}")
-            
-            # Create an error message
-            error_msg = f"ERROR: Tool execution failed - {str(e)}"
-            mcp_tool_result = f"<mcp_tool_result>\n{error_msg}\n</mcp_tool_result>"
-            
-            # Log error trace
+
+            # Determine JSON-RPC error code (use e.code if available, otherwise InternalError)
+            code = getattr(e, 'code', -32603)
+            # Build JSON-RPC error object
+            error_payload = {"error": {"code": code, "message": str(e)}}
+            error_json = json.dumps(error_payload)
+            mcp_tool_result = f"<mcp_tool_result>\n{error_json}\n</mcp_tool_result>"
+
+            # Log error trace with code
             self.interaction_traces.append({
                 "tool_call": mcp_tool_call,
                 "tool_result": mcp_tool_result,
                 "used_mcp": True,
-                "error": str(e)
+                "error": str(e),
+                "error_code": code
             })
             
-            # Return the error message so the model can handle it
-            return error_msg
-    
+            # Return structured JSON-RPC error payload
+            return error_json
+
     def get_interaction_traces(self):
         """Return all logged interaction traces for training data generation."""
         return self.interaction_traces 
+
+    async def initialize(self, protocol_version: str = "2025-03-26",
+                          capabilities: Dict[str, Any] = None,
+                          client_info: Dict[str, str] = None) -> None:
+        """
+        Perform MCP initialize/initialized handshake, exposing its JSON-RPC payloads in logs and traces.
+        """
+        # Default capabilities
+        default_caps = {
+            "tools": {"listChanged": False},
+            "resources": {"listChanged": False},
+            "prompts": {"listChanged": False},
+            "sampling": {},
+            "roots": {"listChanged": False},
+        }
+        if capabilities:
+            default_caps.update(capabilities)
+        # Default client info
+        info = client_info or {"name": "jiki", "version": "0.1.0"}
+        # Build initialize request
+        init_req = {
+            "method": "initialize",
+            "params": {
+                "protocolVersion": protocol_version,
+                "capabilities": default_caps,
+                "clientInfo": info
+            },
+            "jsonrpc": "2.0",
+            "id": 0
+        }
+        init_json = json.dumps(init_req, indent=2)
+        mcp_init_call = f"<mcp_initialize>\n{init_json}\n</mcp_initialize>"
+        print(f"[DEBUG] Sending MCP initialize call: {mcp_init_call}")
+        self.interaction_traces.append({"handshake": {"initialize": init_json}})
+        # Build initialized notification
+        notif = {"method": "initialized", "params": {}, "jsonrpc": "2.0"}
+        notif_json = json.dumps(notif, indent=2)
+        mcp_notif = f"<mcp_initialized>\n{notif_json}\n</mcp_initialized>"
+        print(f"[DEBUG] Sending MCP initialized notification: {mcp_notif}")
+        self.interaction_traces.append({"handshake": {"initialized": notif_json}})
+        self._initialized = True 

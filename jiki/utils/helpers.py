@@ -2,6 +2,7 @@ import asyncio
 import types
 import sys
 from typing import TYPE_CHECKING, Any, Optional
+from datetime import date, datetime  # Added imports for JSON serializer fallback
 
 # Use TYPE_CHECKING to avoid circular import issues at runtime if Orchestrator type hints are needed
 if TYPE_CHECKING:
@@ -9,6 +10,42 @@ if TYPE_CHECKING:
     from jiki.logging import TraceLogger
 
 from jiki.models.response import DetailedResponse
+
+# Add json_serializer_default to handle non-serializable types for json.dumps
+def json_serializer_default(o: Any) -> Any:
+    """Handles common non-serializable types for json.dumps."""
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()  # Convert datetimes/dates to ISO string
+    elif isinstance(o, set):
+        return list(o)  # Convert sets to lists
+    elif isinstance(o, bytes):
+        try:
+            return o.decode('utf-8')  # Try decoding bytes as UTF-8
+        except UnicodeDecodeError:
+            return repr(o)  # Fallback for non-UTF8 bytes
+    # Add checks for common patterns in custom objects
+    elif hasattr(o, 'to_dict') and callable(o.to_dict):
+        try:
+            return o.to_dict()
+        except Exception:
+            pass
+    elif hasattr(o, 'model_dump') and callable(o.model_dump):  # Pydantic V2
+        try:
+            return o.model_dump()
+        except Exception:
+            pass
+    elif hasattr(o, 'dict') and callable(o.dict):  # Pydantic V1
+        try:
+            return o.dict()
+        except Exception:
+            pass
+    elif hasattr(o, '__dict__'):
+        try:
+            return o.__dict__
+        except Exception:
+            pass
+    # Final fallback: return representation
+    return repr(o)
 
 def _attach_helper_methods(orchestrator: 'JikiOrchestrator', logger: Optional['TraceLogger']):
     """Attach helper methods (sync wrappers, UI launchers, etc.) to the orchestrator instance."""

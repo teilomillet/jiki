@@ -28,7 +28,7 @@ Typical Usage
 >>> print(response)
 
 """
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from jiki.utils.cleaning import clean_output
 from jiki.models.response import ToolCall
 from jiki.utils.prompt import create_available_tools_block, build_initial_prompt
