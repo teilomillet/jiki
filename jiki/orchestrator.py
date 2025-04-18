@@ -64,11 +64,11 @@ class JikiOrchestrator:
         """
         return create_available_tools_block(self.tools_config)
 
-    def build_initial_prompt(self, user_input: str) -> str:
+    def build_initial_prompt(self, user_input: str, resources_config: List[Dict[str, Any]] = []) -> str:
         """
         Build the initial prompt for the LLM, including user input and available tools.
         """
-        return build_initial_prompt(user_input, self.tools_config)
+        return build_initial_prompt(user_input, self.tools_config, resources_config)
 
     async def process_user_input(self, user_input: str, max_tokens_ctx: int = 6000) -> str:
         """
@@ -77,12 +77,16 @@ class JikiOrchestrator:
         self._last_tool_calls = []
 
         if not self._messages:
-            # FIRST TURN — combine instructions, tool list, *and* initial user question
-            # This avoids injecting a blank "User:" line in the system prompt and eliminates
-            # the need for a second user‑role message.
+            # FIRST TURN — fetch resources, then combine instructions, tool list, resources, and user question
+            resources_config = []
+            try:
+                resources_config = await self.mcp_client.list_resources()
+            except Exception:
+                pass  # proceed even if resources fetch fails
+            initial_content = self.build_initial_prompt(user_input, self.tools_config, resources_config)
             self._messages.append({
                 "role": "system",
-                "content": self.build_initial_prompt(user_input)
+                "content": initial_content
             })
         else:
             # SUBSEQUENT TURNS — add the user message as a separate turn

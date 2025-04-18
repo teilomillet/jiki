@@ -238,3 +238,48 @@ class EnhancedMCPClient:
         print(f"[DEBUG] Sending MCP initialized notification: {mcp_notif}")
         self.interaction_traces.append({"handshake": {"initialized": notif_json}})
         self._initialized = True 
+
+    async def list_resources(self) -> List[Dict[str, Any]]:
+        """List available resources from MCP server."""
+        if not self._initialized:
+            await self.initialize()
+        transport = self.mcp_client.connection
+        try:
+            async with Client(transport) as client:
+                resources_result = await client.list_resources()
+            raw_list = getattr(resources_result, 'resources', resources_result)
+            resources: List[Dict[str, Any]] = []
+            for r in raw_list:
+                resources.append({
+                    'uri': getattr(r, 'uri', None),
+                    'name': getattr(r, 'name', None),
+                    'description': getattr(r, 'description', None),
+                    'mimeType': getattr(r, 'mimeType', None),
+                })
+            return resources
+        except Exception as e:
+            print(f"[ERROR] Failed to list resources: {e}")
+            return []
+
+    async def read_resource(self, uri: str) -> List[Dict[str, Any]]:
+        """Read resource content from MCP server."""
+        if not self._initialized:
+            await self.initialize()
+        transport = self.mcp_client.connection
+        try:
+            async with Client(transport) as client:
+                read_result = await client.read_resource(uri)
+            contents = getattr(read_result, 'contents', None)
+            if contents is None:
+                contents = [read_result]
+            resource_contents: List[Dict[str, Any]] = []
+            for c in contents:
+                resource_contents.append({
+                    'uri': getattr(c, 'uri', None),
+                    'mimeType': getattr(c, 'mimeType', None),
+                    'text': getattr(c, 'text', None),
+                })
+            return resource_contents
+        except Exception as e:
+            print(f"[ERROR] Failed to read resource {uri}: {e}")
+            return [] 

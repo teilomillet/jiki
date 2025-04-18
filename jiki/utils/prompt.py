@@ -9,11 +9,27 @@ def create_available_tools_block(tools_config: List[Dict[str, Any]]) -> str:
     return f"<mcp_available_tools>\n{json.dumps(tools_config, indent=2)}\n</mcp_available_tools>"
 
 
-def build_initial_prompt(user_input: str, tools_config: List[Dict[str, Any]]) -> str:
+def create_available_resources_block(resources_config: List[Dict[str, Any]]) -> str:
+    """
+    Format a block describing the available resources (e.g., <mcp_available_resources> ... </mcp_available_resources>).
+    """
+    return f"<mcp_available_resources>\n{json.dumps(resources_config, indent=2)}\n</mcp_available_resources>"
+
+
+def build_initial_prompt(
+    user_input: str,
+    tools_config: List[Dict[str, Any]],
+    resources_config: List[Dict[str, Any]] = None
+) -> str:
     """
     Build the initial prompt for the LLM, including the user input and available tools.
     """
-    block = create_available_tools_block(tools_config)
+    block_tools = create_available_tools_block(tools_config)
+    # Include resources block if provided
+    block_resources = ""
+    if resources_config:
+        block_resources = create_available_resources_block(resources_config)
+
     instruction = (
         "INSTRUCTIONS: You are an AI assistant that can use tools to help solve problems. "
         "After using tools to gather information, you should provide a complete, natural language response to the user's question. "
@@ -32,9 +48,11 @@ def build_initial_prompt(user_input: str, tools_config: List[Dict[str, Any]]) ->
         "<mcp_tool_call>\n{\n  \"tool_name\": \"add\", \"arguments\": {\"a\": 3, \"b\": 4}\n  // missing closing brace\n</mcp_tool_call>\n"
         "\nAfter using a tool and getting its result, continue to answer the user's original question completely."
     )
+    # Combine instruction with user input, tools, and optional resources
     prompt = (
         f"{instruction}\n\n"
         f"User: {user_input}\n\n"
-        f"{block}\n\n"
+        f"{block_tools}\n\n"
+        f"{block_resources}\n\n"
     )
     return prompt 
