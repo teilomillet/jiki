@@ -32,7 +32,7 @@ from typing import List, Dict, Any, Optional
 from jiki.utils.cleaning import clean_output
 from jiki.models.response import ToolCall
 from jiki.prompts.prompt_builder import IPromptBuilder, DefaultPromptBuilder
-from jiki.tool_client import IToolClient
+from jiki.tool_client import IMCPClient
 from jiki.utils.context import trim_context
 from jiki.utils.parsing import extract_tool_call, extract_thought
 from jiki.utils.tool import parse_tool_call_content, validate_tool_call
@@ -57,7 +57,7 @@ class JikiOrchestrator:
     def __init__(
         self,
         model: Any,
-        mcp_client: IToolClient,
+        mcp_client: IMCPClient,
         tools_config: List[Dict[str, Any]],
         logger=None,
         prompt_builder: IPromptBuilder = None

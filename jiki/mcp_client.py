@@ -162,9 +162,8 @@ class EnhancedMCPClient(IToolClient):
                     schema = {
                         "tool_name": getattr(tool, 'name', None),
                         "description": getattr(tool, 'description', ''),
-                        "arguments": getattr(tool, 'inputSchema', {}).get('properties', {}) 
-                        # TODO: Handle 'required' fields if available in inputSchema
-                        # TODO: Deeper validation of the schema structure might be needed
+                        # Use JSON-schema properties to define arguments
+                        "arguments": getattr(tool, 'inputSchema', {}).get('properties', {})
                     }
                     if schema["tool_name"]:
                          # Add required field if present in the original schema

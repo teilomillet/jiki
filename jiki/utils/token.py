@@ -1,3 +1,5 @@
+from typing import List, Dict
+
 # Cache encoders per model_name to avoid reinitializing
 _encoders = {}
 
@@ -6,7 +8,7 @@ try:
 except ImportError:
     tiktoken = None
 
-from typing import List, Dict, Any
+
 
 def count_tokens(messages: List[Dict[str, str]], model_name: str) -> int:
     """
