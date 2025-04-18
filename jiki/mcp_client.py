@@ -5,6 +5,7 @@ from typing import Any, List, Dict
 import traceback
 import json
 from jiki.utils.helpers import json_serializer_default
+from pathlib import Path
 
 class MCPClient:
     """
@@ -81,13 +82,14 @@ class EnhancedMCPClient(IToolClient):
 
         asyncio.run(demo())
     """
-    def __init__(self, transport_type: str = "stdio", script_path: str = None, transport: ITransport = None):
+    def __init__(self, transport_type: str = "stdio", script_path: str = None, transport: ITransport = None, roots: list[str] | None = None):
         """
         Initialize the enhanced MCP client with configurable transport
         
         :param transport_type: Type of transport to use ("stdio" or "sse")
         :param script_path: Path to the MCP server script or URL for SSE
         :param transport: Optional pre-created ITransport instance to inject.
+        :param roots: Optional list of root URIs or a callable returning such a list.
 
         Example:
             client = EnhancedMCPClient(
@@ -98,6 +100,20 @@ class EnhancedMCPClient(IToolClient):
         self.transport_type = transport_type
         self.script_path = script_path or "servers/calculator_server.py"
         self.interaction_traces: List[Dict[str, Any]] = []
+        
+        # Setup roots handler for MCP "roots" capability
+        if roots is None:
+            # Default to current working directory
+            default_root = Path.cwd().resolve().as_uri()
+            self.roots_handler = [default_root]
+        elif isinstance(roots, list):
+            if not all(isinstance(r, str) for r in roots):
+                raise TypeError("All roots must be string URIs")
+            self.roots_handler = roots
+        elif callable(roots):
+            self.roots_handler = roots
+        else:
+            raise TypeError("roots must be a list of URIs or a callable returning such a list")
         
         # Allow injecting a custom transport instance directly, otherwise use factory
         if transport is not None:
@@ -130,7 +146,7 @@ class EnhancedMCPClient(IToolClient):
         
         try:
             # Create a standard fastmcp Client using the same transport
-            async with Client(transport) as client:
+            async with Client(transport, roots=self.roots_handler) as client:
                 # List available tools using the standard client method
                 tool_list = await client.list_tools()
                 
@@ -255,13 +271,13 @@ class EnhancedMCPClient(IToolClient):
         :param capabilities: Additional capabilities to negotiate.
         :param client_info: Client metadata dict with 'name' and 'version'.
         """
-        # Default capabilities
+        # Default capabilities, enabling roots listing notifications
         default_caps = {
             "tools": {"listChanged": False},
             "resources": {"listChanged": False},
             "prompts": {"listChanged": False},
             "sampling": {},
-            "roots": {"listChanged": False},
+            "roots": {"listChanged": True},
         }
         if capabilities:
             default_caps.update(capabilities)
@@ -296,7 +312,7 @@ class EnhancedMCPClient(IToolClient):
             await self.initialize()
         transport = self.mcp_client.connection
         try:
-            async with Client(transport) as client:
+            async with Client(transport, roots=self.roots_handler) as client:
                 resources_result = await client.list_resources()
             raw_list = getattr(resources_result, 'resources', resources_result)
             resources: List[Dict[str, Any]] = []
@@ -318,7 +334,7 @@ class EnhancedMCPClient(IToolClient):
             await self.initialize()
         transport = self.mcp_client.connection
         try:
-            async with Client(transport) as client:
+            async with Client(transport, roots=self.roots_handler) as client:
                 read_result = await client.read_resource(uri)
             contents = getattr(read_result, 'contents', None)
             if contents is None:
@@ -333,4 +349,30 @@ class EnhancedMCPClient(IToolClient):
             return resource_contents
         except Exception as e:
             print(f"[ERROR] Failed to read resource {uri}: {e}")
-            return [] 
+            return []
+
+    async def list_roots(self) -> List[Dict[str, Any]]:
+        """List available roots from MCP server."""
+        if not self._initialized:
+            await self.initialize()
+        transport = self.mcp_client.connection
+        try:
+            async with Client(transport, roots=self.roots_handler) as client:
+                roots_res = await client.list_roots()
+            raw = getattr(roots_res, 'roots', roots_res)
+            return [{'uri': getattr(r, 'uri', None), 'name': getattr(r, 'name', None)} for r in raw]
+        except Exception as e:
+            print(f"[ERROR] Failed to list roots: {e}")
+            return []
+
+    async def send_roots_list_changed(self) -> None:
+        """Notify server of roots list change."""
+        if not self._initialized:
+            await self.initialize()
+        transport = self.mcp_client.connection
+        try:
+            async with Client(transport, roots=self.roots_handler) as client:
+                await client.send_roots_list_changed()
+            self.interaction_traces.append({'notification': 'roots/list_changed'})
+        except Exception as e:
+            print(f"[ERROR] Failed to send roots list changed notification: {e}") 

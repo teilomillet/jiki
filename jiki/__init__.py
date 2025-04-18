@@ -12,6 +12,9 @@ from .tools.config import load_tools_config
 from .tools.tool import Tool
 from .models.response import DetailedResponse, ToolCall
 from .utils.helpers import _attach_helper_methods
+from .sampling import ISamplerConfig, SamplerConfig
+from .conversation_root_manager import IConversationRootManager
+from .root_manager import IRootManager
 
 # Make the interactive loop function importable if needed elsewhere
 # For now, it's defined in cli.py, so we'll import it within run_ui
@@ -28,16 +31,21 @@ __all__ = [
     'Tool',
     'DetailedResponse',
     'ToolCall',
+    'IConversationRootManager',
+    'IRootManager',
 ]
 
 def create_jiki(
-    model="anthropic/claude-3-7-sonnet-latest",
+    model: str = "anthropic/claude-3-7-sonnet-latest",
     tools=None,
-    mcp_mode="stdio",
-    mcp_script_path=None,
-    trace=True,
-    trace_dir=None,
-    auto_discover_tools: bool = False
+    mcp_mode: str = "stdio",
+    mcp_script_path: str = None,
+    trace: bool = True,
+    trace_dir: str = None,
+    auto_discover_tools: bool = False,
+    sampler_config: ISamplerConfig = None,
+    roots: list[str] | None = None,  # Optional file:// URIs for MCP roots
+    conversation_root_manager: IConversationRootManager = None,
 ) -> JikiOrchestrator:
     """
     Create a pre-configured Jiki orchestrator with a streamlined interface.
@@ -53,6 +61,9 @@ def create_jiki(
         trace_dir (str): Directory to save traces (None for memory only)
         auto_discover_tools (bool): If True, discover tools directly from the MCP server
                                     via `mcp_client.discover_tools()` instead of using the `tools` argument. Defaults to False.
+        sampler_config (ISamplerConfig): Optional sampler configuration for the model
+        roots (list[str] | None): Optional file:// URIs for MCP roots
+        conversation_root_manager (IConversationRootManager): Optional conversation root manager
 
     Returns:
         JikiOrchestrator: Configured orchestrator instance
@@ -69,8 +80,8 @@ def create_jiki(
          # Check mcp_mode as well? SSE might imply a default URL? For now, require explicit path/URL.
          raise ValueError("'mcp_script_path' (or connection URL for SSE) must be provided when 'auto_discover_tools' is True.")
 
-    # Create the model
-    model_instance = LiteLLMModel(model)
+    # Create the model with optional sampling configuration
+    model_instance = LiteLLMModel(model, sampler_config)
     
     # Create the logger if enabled
     logger = None
@@ -82,7 +93,8 @@ def create_jiki(
     # Assuming EnhancedMCPClient is still the desired client here
     mcp_client = EnhancedMCPClient(
         transport_type=mcp_mode,
-        script_path=mcp_script_path
+        script_path=mcp_script_path,
+        roots=roots
     )
     
     # Process tools configuration
@@ -142,5 +154,8 @@ def create_jiki(
     
     # Attach helper methods using the imported function
     _attach_helper_methods(orchestrator, logger)
+    
+    # Attach conversation root manager or default to orchestrator itself
+    orchestrator.root_manager = conversation_root_manager or orchestrator
     
     return orchestrator

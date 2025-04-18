@@ -58,10 +58,41 @@ def validate_tool_call(
     if not tool_schema:
         return None, f"ERROR: Tool '{tool_name}' not found."
 
-    # Check required argument keys
-    expected_args = tool_schema.get("arguments", {})
-    missing = [key for key in expected_args if key not in arguments]
-    if missing:
-        return None, f"ERROR: Tool '{tool_name}' missing required arguments: {missing}"
+    # Determine required arguments from JSON-schema 'required' or default to all schema keys
+    expected_args_schema = tool_schema.get("arguments", {})
+    required_args = tool_schema.get("required", list(expected_args_schema.keys()))
+    missing_required = [key for key in required_args if key not in arguments]
+    if missing_required:
+        return None, f"ERROR: Tool '{tool_name}' missing required arguments: {missing_required}"
 
+    # Perform basic type-checking for arguments defined in the schema
+    type_errors: List[str] = []
+    for arg_name, arg_schema in expected_args_schema.items():
+        if not isinstance(arg_schema, dict) or "type" not in arg_schema or arg_name not in arguments:
+            continue
+        expected_type = arg_schema["type"]
+        types = expected_type if isinstance(expected_type, list) else [expected_type]
+        python_types: List[type] = []
+        for t in types:
+            if t == "string":
+                python_types.append(str)
+            elif t == "number":
+                python_types.extend([int, float])
+            elif t == "integer":
+                python_types.append(int)
+            elif t == "boolean":
+                python_types.append(bool)
+            elif t == "array":
+                python_types.append(list)
+            elif t == "object":
+                python_types.append(dict)
+            elif t == "null":
+                python_types.append(type(None))
+        if python_types and not isinstance(arguments[arg_name], tuple(python_types)):
+            actual_type = type(arguments[arg_name]).__name__
+            type_errors.append(f"Argument '{arg_name}' expected type {expected_type}, got {actual_type}")
+    if type_errors:
+        return None, f"ERROR: Tool '{tool_name}' invalid argument types: {type_errors}"
+
+    # All required arguments present and correctly typed
     return tool_schema, None 

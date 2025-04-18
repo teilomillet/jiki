@@ -1,4 +1,5 @@
 from typing import Protocol, List, Dict, Any
+from jiki.resource_manager import IResourceManager
 
 
 class IToolClient(Protocol):
@@ -18,4 +19,13 @@ class IToolClient(Protocol):
         Invoke a tool by name with the provided arguments.
         Returns the tool's raw string result (or JSON-encoded value).
         """
-        ... 
+        ...
+
+class IMCPClient(IToolClient, IResourceManager, Protocol):
+    """
+    Combined protocol for MCP clients supporting both tool discovery/invocation and resource management.
+    """
+    ...
+    # Also support root listing and notifications
+    async def list_roots(self) -> List[Dict[str, Any]]: ...
+    async def send_roots_list_changed(self) -> None: ... 

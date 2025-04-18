@@ -199,3 +199,49 @@ class JikiOrchestrator:
             result_block = f"<mcp_tool_result>\n{result_content}\n</mcp_tool_result>"
             record_conversation_event(self.conversation_history, "system", result_block, self.logger)
             return result_content 
+
+    def snapshot(self) -> Dict[str, Any]:
+        """
+        Capture the current conversation state as a snapshot dict.
+        """
+        # Make shallow copies to avoid external mutation
+        return {
+            "messages": list(self._messages),
+            "conversation_history": list(self.conversation_history),
+            "last_tool_calls": [
+                {"tool": tc.tool, "arguments": tc.arguments, "result": tc.result}
+                for tc in getattr(self, '_last_tool_calls', [])
+            ]
+        }
+
+    def resume(self, snapshot: Dict[str, Any]) -> None:
+        """
+        Restore conversation state from a snapshot dict.
+        """
+        if not isinstance(snapshot, dict):
+            raise TypeError("snapshot must be a dict containing messages, conversation_history, and last_tool_calls")
+        # Restore messages
+        msgs = snapshot.get('messages')
+        if not isinstance(msgs, list):
+            raise TypeError("snapshot['messages'] must be a list")
+        self._messages = list(msgs)
+        # Restore conversation history
+        history = snapshot.get('conversation_history')
+        if not isinstance(history, list):
+            raise TypeError("snapshot['conversation_history'] must be a list")
+        self.conversation_history = list(history)
+        # Restore last tool calls
+        calls = snapshot.get('last_tool_calls', [])
+        if not isinstance(calls, list):
+            raise TypeError("snapshot['last_tool_calls'] must be a list")
+        # Reconstruct ToolCall objects
+        from jiki.models.response import ToolCall
+        restored = []
+        for item in calls:
+            if isinstance(item, dict):
+                restored.append(ToolCall(
+                    item.get('tool'),
+                    item.get('arguments'),
+                    item.get('result')
+                ))
+        self._last_tool_calls = restored 
