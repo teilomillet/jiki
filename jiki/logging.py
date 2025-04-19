@@ -49,6 +49,11 @@ class TraceLogger:
             "reward": trace_data.get("reward"),  # None if missing
             **trace_data,
         }
+        # Include any recorded events (e.g., system messages, tool results, thoughts)
+        if self.events:
+            trace_with_meta["events"] = self.events.copy()
+            # Clear events after snapshotting to avoid duplication
+            self.events.clear()
         
         self.complete_traces.append(trace_with_meta)
         
@@ -102,7 +107,8 @@ class TraceLogger:
         
         # Save as JSON or JSONL based on extension
         if filepath.endswith('.jsonl'):
-            with open(abs_filepath, "w") as f:
+            # append so multiple calls accumulate in one file
+            with open(abs_filepath, "a") as f:
                 for trace in self.complete_traces:
                     f.write(json.dumps(trace) + "\n")
         else:

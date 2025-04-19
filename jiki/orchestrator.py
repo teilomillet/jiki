@@ -165,7 +165,14 @@ class JikiOrchestrator:
         """
         Delegate token streaming and tool-call interception to the shared utility.
         """
-        log_complete = self.logger.log_complete_trace if self.logger else None
+        # wrap complete trace logger to include raw MCP client traces if logging is enabled
+        if self.logger:
+            def log_complete(trace_data: Dict[str, Any]) -> None:
+                # attach raw MCP server log notifications and tool call traces
+                trace_data['mcp_traces'] = self.mcp_client.get_interaction_traces().copy()
+                self.logger.log_complete_trace(trace_data)
+        else:
+            log_complete = None
 
         # For Anthropic-based LLMs, convert the initial 'system' message into a 'user' role
         def token_generator_with_system_as_user(ctx_msgs):

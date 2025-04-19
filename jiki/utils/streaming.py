@@ -34,6 +34,8 @@ async def generate_and_intercept(
                 thought_content = extract_thought_fn(combined)
                 if thought_content:
                     thought_found = True
+                    # record assistant thought in trace
+                    raw_conversation.append({"role": "assistant_thought", "content": thought_content})
                     # continue streaming
 
             # detect tool calls

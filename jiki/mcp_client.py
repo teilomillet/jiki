@@ -126,12 +126,18 @@ class JikiClient(IMCPClient):
         self.interaction_traces.append({"handshake": {"initialize_sent": init_json_log}})
         self.interaction_traces.append({"handshake": {"initialized_sent": notif_json_log}})
 
+    def _on_mcp_notification(self, method: str, params: Any):
+        """Capture server logging notifications per MCP logging spec."""
+        # Per MCP 'utilities/logging/log' notification spec
+        if method == "utilities/logging/log":
+            # params expected to include {level, timestamp, message}
+            self.interaction_traces.append({"log": params})
 
     async def discover_tools(self) -> List[Dict[str, Any]]:
         """Discover tools using the `client.list_tools()` method."""
         print("[INFO] Discovering tools via fastmcp.Client 'list_tools'...")
         try:
-            # Connect and make the call using fastmcp.Client context manager
+            # Subscribe to server-side logging notifications
             async with Client(self._transport_source, roots=self.roots_handler) as client:
                 tool_list_mcp: List[Tool] = await client.list_tools() # Returns List[mcp.types.Tool]
 

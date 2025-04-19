@@ -9,6 +9,8 @@ This script consolidates three advanced usage patterns:
 """
 
 from jiki import Jiki, SamplerConfig
+# Define a single JSONL file for all example traces
+TRACE_FILE = "advanced_examples_traces.jsonl"
 
 # Example 1: Manual tools configuration
 # Uses the existing tools.json and calculator_server.py
@@ -23,7 +25,7 @@ def example_manual_tools():
     )
     result = orchestrator.process("What is 7 * 6?")
     print("[Manual Tools] 7 * 6 =", result)
-    orchestrator.export_traces("advanced_manual_tools.jsonl")
+    orchestrator.export_traces(TRACE_FILE)
 
 # Example 2: Custom sampling configuration
 def example_custom_sampling():
@@ -37,7 +39,7 @@ def example_custom_sampling():
     )
     result = orchestrator.process("Give me a short sentence about clouds.")
     print("[Custom Sampling] Cloud sentence:", result)
-    orchestrator.export_traces("advanced_custom_sampling.jsonl")
+    orchestrator.export_traces(TRACE_FILE)
 
 
 # Example 3: Conversation Snapshot and Resume
@@ -70,7 +72,7 @@ def example_snapshot_resume():
     orchestrator1.process("My favorite number is 17.")
     # Assume snapshot is implicitly called by root_manager logic or manually
     saved_state = root_manager.snapshot() 
-    orchestrator1.export_traces("advanced_snapshot_1.jsonl")
+    orchestrator1.export_traces(TRACE_FILE)
 
     # Second orchestrator instance, resuming state
     print("\n[Snapshot/Resume] Creating second instance and resuming...")
@@ -86,7 +88,7 @@ def example_snapshot_resume():
     print("\n[Snapshot/Resume] Second interaction (should know favorite number)...")
     result = orchestrator2.process("What is my favorite number plus 3?")
     print("[Snapshot/Resume] Result:", result) # Should ideally use 17
-    orchestrator2.export_traces("advanced_snapshot_2.jsonl")
+    orchestrator2.export_traces(TRACE_FILE)
 
 
 if __name__ == "__main__":
