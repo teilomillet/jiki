@@ -42,7 +42,12 @@ Let's trace a user query like "What is 5 * 7?" assuming the calculator tool is a
 10. **Final Response Generation**: The LLM uses the tool result to formulate the final answer (e.g., "5 * 7 is 35.") and streams it back.
 11. **Output Cleaning**: The final streamed response is cleaned (`clean_output`) to remove any remaining partial tags or artifacts.
 12. **Return Result**: The orchestrator returns the final cleaned response to the user.
-13. **Logging**: Throughout this process, if tracing is enabled (`Jiki(trace=True)`), `TraceLogger` records events (user input, prompt, tool call, tool result, final response) and the complete interaction trace.
+13. **Logging & Trace Export**: If tracing is enabled (`Jiki(trace=True)`), `TraceLogger` records:
+    - User input and system prompts
+    - `<mcp_tool_call>` and `<mcp_tool_result>` blocks
+    - Any `<Assistant_Thought>` segments
+    - Server-side log entries captured under `mcp_traces`
+  All of these combined into a single trace dictionary for export.
 
 ## Key Design Principles
 

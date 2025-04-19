@@ -1,10 +1,10 @@
 # Jiki
 
-Jiki is a flexible LLM orchestration framework with built-in tool calling capabilities.
+![Jiki Logo](logo.png)
 
 ## Overview
 
-Jiki provides a clean interface for building AI assistants that can use tools to solve problems. It orchestrates the interaction between language models and external tools using the MCP (Model Context Protocol).
+Jiki is a flexible LLM orchestration framework with built-in tool calling capabilities.
 
 ## Features
 
@@ -15,6 +15,21 @@ Jiki provides a clean interface for building AI assistants that can use tools to
 - Simple built-in interactive CLI (`run_ui()`)
 - Primary CLI interface (`python -m jiki.cli ...`) for non-interactive processing, trace management, and interactive sessions.
 - XML-based tool call format for clear model interaction
+
+### Demos
+
+Explore the `examples/` directory to see Jiki in action with end-to-end scripts:
+
+- `examples/simple_multiturn_cli.py`: Programmatic interactive CLI using auto-discovery of tools.
+- `examples/custom_transport_example.py`: Demonstrates SSE transport, resource listing, and direct RPC calls.
+- `examples/advanced_examples.py`: Advanced usage patterns: manual tools config, custom sampling, snapshot/resume.
+
+Run these demos via:
+```bash
+uv run examples/simple_multiturn_cli.py
+uv run examples/custom_transport_example.py
+uv run examples/advanced_examples.py
+```
 
 ## Quick Start
 

@@ -14,6 +14,7 @@ Each interaction or "turn" typically generates a trace dictionary containing:
 - `turn_id`: A unique ID for the specific turn within the conversation.
 - `events`: A list of dictionaries, each representing a step in the turn (e.g., `user_input`, `llm_prompt`, `tool_call`, `tool_result`, `llm_response`).
 - `metadata`: Optional additional context.
+- `mcp_traces`: A list of raw MCP client interactions and server-side log notifications captured during the turn.
 
 ## Enabling Tracing
 

@@ -84,9 +84,15 @@ client = JikiClient(connection_info=connection_info)
 - `list_resources()`, `read_resource()`: Manages resources.
 - `list_roots()`, `send_roots_list_changed()`: Manages roots.
 
-### Tracing
+### Tracing & Server Log Capture
 
-The `JikiClient` automatically logs MCP interactions (handshakes, calls, results) if a `TraceLogger` is provided during its initialization (which `Jiki(trace=True)` handles).
+The `JikiClient` automatically logs all MCP interactions when a `TraceLogger` is provided (via `Jiki(trace=True)`). This includes:
+  - JSON‑RPC handshake records
+  - `<mcp_tool_call>` blocks
+  - `<mcp_tool_result>` blocks
+  - Server‑side log entries emitted via the `utilities/logging/log` notification (per the MCP spec)
+
+Each saved trace bundle includes handshakes, tool calls/results, and any server-side log entries.
 
 ```python
 # Example trace output fragment
@@ -113,8 +119,6 @@ print("[DEBUG] Performing MCP initialize handshake...")
 # for t in traces:
 #     print(t)
 ```
-
-- Each trace includes JSON‑RPC handshakes, `<mcp_tool_call>`, `<mcp_tool_result>`, and notifications
 
 ---
 

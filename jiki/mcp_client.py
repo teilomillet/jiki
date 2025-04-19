@@ -233,10 +233,10 @@ class JikiClient(IMCPClient):
             resources = []
             for r in resource_list_mcp:
                 resources.append({
-                    'uri': getattr(r, 'uri', None),
-                    'name': getattr(r, 'name', None),
-                    'description': getattr(r, 'description', None),
-                    'mimeType': getattr(r, 'mimeType', None),
+                    'uri': str(getattr(r, 'uri', '')) if getattr(r, 'uri', None) is not None else None,
+                    'name': str(getattr(r, 'name', '')) if getattr(r, 'name', None) is not None else None,
+                    'description': str(getattr(r, 'description', '')) if getattr(r, 'description', None) is not None else None,
+                    'mimeType': str(getattr(r, 'mimeType', '')) if getattr(r, 'mimeType', None) is not None else None,
                 })
             return resources
         except ConnectionError as e:
