@@ -4,167 +4,94 @@
 
 ## Overview
 
-Jiki is a flexible LLM orchestration framework with built-in tool calling capabilities.
+Jiki is a flexible LLM orchestration framework designed for building applications that leverage tool calling via the Multi-Capability Protocol (MCP). It integrates seamlessly with LiteLLM for broad LLM provider support and FastMCP for robust tool server communication.
 
-## Features
-
-- Seamless integration with LiteLLM for support of multiple LLM providers
-- Tool calling through FastMCP infrastructure (manual config or auto-discovery)
-- Flexible MCP client with multiple transport options (stdio, SSE)
-- Structured conversation logging for training data generation
-- Simple built-in interactive CLI (`run_ui()`)
-- Primary CLI interface (`python -m jiki.cli ...`) for non-interactive processing, trace management, and interactive sessions.
-- XML-based tool call format for clear model interaction
-
-### Demos
-
-Explore the `examples/` directory to see Jiki in action with end-to-end scripts:
-
-- `examples/simple_multiturn_cli.py`: Programmatic interactive CLI using auto-discovery of tools.
-- `examples/custom_transport_example.py`: Demonstrates SSE transport, resource listing, and direct RPC calls.
-- `examples/advanced_examples.py`: Advanced usage patterns: manual tools config, custom sampling, snapshot/resume.
-
-Run these demos via:
-```bash
-uv run examples/simple_multiturn_cli.py
-uv run examples/custom_transport_example.py
-uv run examples/advanced_examples.py
-```
+Jiki aims to be easy to start with for simple use cases while providing the depth needed for complex, customized applications.
 
 ## Quick Start
 
-Install Jiki (using [uv](https://github.com/astral-sh/uv) recommended):
+Get started quickly with Jiki's interactive CLI or by integrating it into your Python application.
+
+**Installation:** (using [uv](https://github.com/astral-sh/uv) recommended)
 ```bash
 # Using uv
 uv pip install jiki
 ```
 
-You need to export your API keys to the environment, ANTHROPIC_API_KEY is the default model:
+**Environment Setup:** Export your LLM provider API key (default is Anthropic):
 ```bash
 export ANTHROPIC_API_KEY=<your_api_key>
+# Or OPENAI_API_KEY, etc., depending on the model used
 ```
 
-Create and run an orchestrator programmatically:
-```python
-# Using the new factory function
-from jiki import Jiki 
+**Run Interactive CLI:**
+The simplest way to start is using the built-in CLI with automatic tool discovery (requires a compatible MCP server, like the example `servers/calculator_server.py`).
+```bash
+python -m jiki.cli run --auto-discover --mcp-script-path servers/calculator_server.py
+```
+Exit with Ctrl-D, Ctrl-C, or `exit`.
 
-# Create a pre-configured orchestrator using auto-discovery
-# This assumes a compatible FastMCP server (like servers/calculator_server.py)
-# is running or accessible via the specified mcp_script_path.
-# It also uses default model and tracing settings.
+**Programmatic Usage (Simple):**
+```python
+from jiki import Jiki
+
+# Create an orchestrator using auto-discovery
+# Assumes servers/calculator_server.py is accessible
 orchestrator = Jiki(
     auto_discover_tools=True,
     mcp_mode="stdio",
     mcp_script_path="servers/calculator_server.py"
 )
 
-# Launch the built-in interactive CLI
-orchestrator.run_ui() # Defaults to frontend='cli'
+# Get a simple response
+result = orchestrator.process("What is 2 + 2?")
+print(result) # Output: 4
 
-# If using programmatically *without* run_ui:
-# result = orchestrator.process("What is 2 + 2?")
-# print(result)
-# orchestrator.export_traces("my_traces.jsonl") # Manually save traces if needed
+# Or run the interactive CLI programmatically
+# orchestrator.run_ui()
 ```
 
-## Primary CLI Usage
+## Examples
 
-The main way to interact with Jiki from the command line is via `python -m jiki.cli`.
+Explore the `examples/` directory to see Jiki's capabilities in action:
 
-**Run an interactive session:**
+-   **`simple_multiturn_cli.py`**: Demonstrates launching the interactive CLI programmatically with just a few lines, relying on automatic tool discovery for immediate use.
+-   **`custom_transport_example.py`**: Shows how to connect to a tool server using a different protocol (SSE over HTTP), interact directly with the MCP client to list resources, and execute tool calls (RPC) without involving the LLM.
+-   **`detailed_and_roots_example.py`**: Illustrates retrieving a `DetailedResponse` containing the final result *plus* structured tool call data and raw interaction traces using `process_detailed()`. Also shows interaction with MCP "roots".
+-   **`advanced_examples.py`**: Highlights several advanced techniques:
+    -   Loading tool definitions manually from a JSON file instead of auto-discovery.
+    *   Customizing LLM generation parameters (like temperature, max tokens) using `SamplerConfig`.
+    *   Implementing persistent conversation state using a `ConversationRootManager` for snapshot and resume functionality across sessions.
+
+Run these examples (uv recommended):
 ```bash
-# Uses defaults (model, auto-discovery from servers/calculator_server.py)
-python -m jiki.cli run
-
-# Specify model and tool source (e.g., a config file)
-python -m jiki.cli run --model <model_name> --tools path/to/tools.json 
-
-# Specify model and auto-discovery source
-python -m jiki.cli run --model <model_name> --auto-discover --mcp-script-path path/to/server.py
+uv run examples/simple_multiturn_cli.py
+uv run examples/custom_transport_example.py
+uv run examples/detailed_and_roots_example.py
+uv run examples/advanced_examples.py
 ```
 
-**Process a single query:**
-```bash
-python -m jiki.cli process "What is 5 * 12?" --tools path/to/tools.json
+## Key Capabilities
 
-echo "What is 5 * 12?" | python -m jiki.cli process --auto-discover --mcp-script-path servers/calculator_server.py
-```
+Jiki offers a range of features, progressing from simple defaults to fine-grained control:
 
-**Manage traces:**
-```bash
-# Export traces saved during a previous run with tracing enabled
-python -m jiki.cli trace export --output traces/my_session.jsonl
-```
-
-Use `--help` for more details on commands and options:
-```bash
-python -m jiki.cli --help
-python -m jiki.cli run --help
-python -m jiki.cli process --help
-```
-
-## Detailed Responses & Tracing
-
-Jiki can return a rich `DetailedResponse` object that includes the assistant's
-answer **and** all tool calls / raw traces generated during the turn. Tracing 
-is enabled by default (`trace=True` in `Jiki()`).
-
-```python
-from jiki import Jiki
-
-orchestrator = Jiki(auto_discover_tools=True, mcp_script_path="servers/calculator_server.py")
-
-# Get a structured response with trace metadata
-detailed = orchestrator.process_detailed("What is the result of adding 10 and 5?")
-
-print(detailed.result)      # The assistant's final answer
-print(detailed.tool_calls)  # List[ToolCall] detailing every tool invocation
-print(detailed.traces)      # Raw trace dictionaries for deeper inspection
-
-# Persist traces from the current session
-# The run_ui() method and `jiki run` command handle this automatically on exit.
-# If using programmatically without run_ui, call this when needed:
-# orchestrator.export_traces("interaction_traces/session.jsonl") 
-```
-
-## Providing Tools Manually
-
-If you don't use `auto_discover_tools=True`, you can provide tool schemas 
-to `Jiki()` via the `tools` argument. This can be a path to a JSON 
-file or a list of dictionaries, where each dictionary follows the FastMCP 
-tool schema format.
-
-Example `tools.json`:
-```json
-[
-    {
-        "tool_name": "calculator",
-        "description": "Performs basic arithmetic operations.",
-        "arguments": {
-            "expression": {
-                "type": "string",
-                "description": "The mathematical expression to evaluate (e.g., '2 + 2')"
-            }
-        }
-    }
-]
-```
-
-Then use it like this:
-```python
-from jiki import Jiki
-
-orchestrator = Jiki(
-    tools="tools.json",
-    mcp_script_path="servers/calculator_server.py",
-    mcp_mode="stdio"
-)
-```
+-   **Multiple LLM Backends:** Leverages LiteLLM for compatibility with OpenAI, Anthropic, Gemini, Mistral, Cohere, Azure, Bedrock, and more.
+-   **Flexible Tool Integration:**
+    -   `auto_discover_tools=True`: Simple start by automatically fetching tool schemas from an MCP server.
+    *   `tools="path/to/tools.json"` or `tools=[{...}]`: Provide tool schemas manually for explicit control.
+-   **Varied MCP Transport:** Connect to tool servers via `stdio` (default, for local scripts) or `sse` (for servers exposing an HTTP endpoint). See `custom_transport_example.py`.
+-   **Detailed Interaction Data:**
+    -   `orchestrator.process()`: Returns the final string result.
+    *   `orchestrator.process_detailed()`: Returns a `DetailedResponse` object containing `.result`, `.tool_calls` (structured list), and `.traces` (raw logs). Essential for debugging and complex logic. See `detailed_and_roots_example.py`.
+-   **Tracing & Logging:** Built-in tracing (`trace=True`) captures interactions, exportable via `orchestrator.export_traces()` or automatically by `run_ui()` and the main CLI.
+-   **LLM Sampling Configuration:** Pass a `SamplerConfig` object during `Jiki` initialization to control temperature, top_p, max_tokens, etc. See `advanced_examples.py`.
+-   **State Management:** Implement the `IConversationRootManager` interface to manage conversation state, enabling snapshot and resume capabilities. See `advanced_examples.py`.
+-   **Direct MCP Client Access:** Use `orchestrator.mcp_client` for lower-level interactions with the tool server (listing resources, direct RPC calls). See `custom_transport_example.py`.
+-   **Command-Line Interface:** `python -m jiki.cli` provides commands for `run` (interactive), `process` (single query), and `trace` management. Use `--help` for details.
 
 ## Contributing
 
-Contributions are welcome! Please see the contributing guide (TODO).
+Contributions are welcome! (TODO: Add contributing guide link)
 
 ## License
 

@@ -70,6 +70,75 @@ Jiki's philosophy centers around this principle:
 
     This extensibility allows you to tailor Jiki precisely to your needs, integrate it into complex applications, or experiment with novel AI interaction patterns.
 
+## Use Case Scenarios
+
+Below are common real‑world objectives and how Jiki's core components can be combined to fulfill each need:
+
+> **Example Wiring (Pseudo-code)**  
+> ```python
+> from jiki import Jiki, SamplerConfig
+> # If you're happy with the default prompt builder, no import needed
+> # For custom scenarios, swap in your own builder:
+> # from jiki.prompts.prompt_builder import DefaultPromptBuilder or CustomPromptBuilder
+> 
+> sampler = SamplerConfig(temperature=0.5, top_p=0.9)
+> 
+> orchestrator = Jiki(
+>     auto_discover_tools=True,
+>     mcp_script_path="servers/calculator_server.py",
+>     sampler_config=sampler,
+>     # prompt_builder=CustomPromptBuilder(),  # optional custom builder
+>     # conversation_root_manager=YourRootManager(),  # optional
+> )
+>
+> # Process your specific instruction
+> result = orchestrator.process("Your task-specific instruction here")
+> print(result)
+> ```
+>
+> **How it works:**
+> 1. Import Jiki and any optional helpers (e.g., `SamplerConfig`, custom `IPromptBuilder`).
+> 2. Instantiate scenario-specific extensions (prompt builders, samplers, root managers).
+> 3. Create the `Jiki` orchestrator with those components.
+> 4. Call `orchestrator.process()` or `process_detailed()` with your instruction.
+> 5. Swap in different components to adapt to each use case with just a few lines.
+
+1. **Rapid Research & Rich Vocabulary**
+   - *Need:* Surface relevant facts and suggest varied wording.
+   - *Jiki Components:* Custom `IPromptBuilder` for retrieval prompts + optional resource manager + post‑processing hooks for synonym expansion.
+
+2. **Consistent, Scalable Brand Voice**
+   - *Need:* Generate large volumes of content that follow a tone/style guide.
+   - *Jiki Components:* `SamplerConfig` for stable output + custom prompts enforcing brand rules + batch mode via repeated `process()` calls.
+
+3. **SEO‑Optimized Output at Speed**
+   - *Need:* Weave target keywords into outlines and prose that rank.
+   - *Jiki Components:* Prompt templates (via `IPromptBuilder`) for outline structure + post‑processing (keyword injector) + trace inspection for metrics.
+
+4. **Boilerplate‑Free Code Assistance**
+   - *Need:* In‑IDE snippet suggestions that handle routine patterns.
+   - *Jiki Components:* Integrate `mcp_client.execute_tool_call` for code‐analysis tools + custom root manager for repository context + detailed responses for insertion metadata.
+
+5. **Team Velocity & Onboarding Accelerator**
+   - *Need:* Provide repo‑specific examples and review hints.
+   - *Jiki Components:* Custom resource manager to ingest codebase + `process_detailed()` for step‐by‐step traces + adjustable prompt to surface examples.
+
+6. **Natural‑Language Persuasion**
+   - *Need:* Generate human‑like copy with varied phrasing.
+   - *Jiki Components:* High‐temperature `SamplerConfig` + prompt variations + post‑filtering for diversity scoring.
+
+7. **Structured Knowledge & Summaries**
+   - *Need:* Turn notes or transcripts into clean outlines and summaries.
+   - *Jiki Components:* Chunking logic (external or via resource manager) + prompt templates for summarization + chaining of `process()` calls.
+
+8. **High‑Volume, Low‑Cost Production**
+   - *Need:* Batch‐generate quality content under budget.
+   - *Jiki Components:* Batch orchestration loop + cost‐monitoring middleware + sampler config tuned for brevity.
+
+9. **Data‑Driven Growth Content**
+   - *Need:* Iterate on content variants and feed back performance.
+   - *Jiki Components:* Automated A/B runner (batch `process()`), trace logging + analytics on `TraceLogger` outputs + dynamic parameter adjustment via feedback loop.
+
 ## Next Steps
 
 *   Explore the **[Core Interfaces](core_interfaces.md)** to understand the protocols that enable Jiki's extensibility.
