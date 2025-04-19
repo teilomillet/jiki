@@ -8,65 +8,91 @@ This script consolidates three advanced usage patterns:
 3. Conversation snapshot and resume functionality
 """
 
-from jiki import create_jiki, SamplerConfig
+from jiki import Jiki, SamplerConfig
 
 # Example 1: Manual tools configuration
 # Uses the existing tools.json and calculator_server.py
 
 def example_manual_tools():
-    orchestrator = create_jiki(
-        tools="tools.json",
+    orchestrator = Jiki(
+        tools="tools.json", # Specify path to tools definition
         mcp_script_path="servers/calculator_server.py",
         mcp_mode="stdio",
+        auto_discover_tools=False, # Disable auto-discovery
         trace=True
     )
     result = orchestrator.process("What is 7 * 6?")
     print("[Manual Tools] 7 * 6 =", result)
+    orchestrator.export_traces("advanced_manual_tools.jsonl")
 
-# Example 2: Custom sampling parameters
-# Adjust temperature and top_p for the LLM
-
-def example_sampling_config():
-    sample_cfg = SamplerConfig(temperature=0.5, top_p=0.9)
-    orchestrator = create_jiki(
-        auto_discover_tools=True,
+# Example 2: Custom sampling configuration
+def example_custom_sampling():
+    custom_sampler = SamplerConfig(temperature=0.1, top_p=0.8, max_tokens=50)
+    orchestrator = Jiki(
+        sampler_config=custom_sampler,
+        auto_discover_tools=True, # Use auto-discovery for tools
         mcp_script_path="servers/calculator_server.py",
-        sampler_config=sample_cfg,
+        mcp_mode="stdio",
         trace=True
     )
-    result = orchestrator.process("Tell me a short poem about the number 5.")
-    print("[Sampling Config] Poem:\n", result)
+    result = orchestrator.process("Give me a short sentence about clouds.")
+    print("[Custom Sampling] Cloud sentence:", result)
+    orchestrator.export_traces("advanced_custom_sampling.jsonl")
 
-# Example 3: Conversation snapshot and resume
-# Capture state mid-conversation and resume later
+
+# Example 3: Conversation Snapshot and Resume
+# Uses a simple in-memory root manager for demonstration
+from jiki.roots.conversation_root_manager import IConversationRootManager
+from typing import Any
+
+class SimpleMemoryRootManager(IConversationRootManager):
+    _state: Any = None
+    def snapshot(self) -> Any:
+        print("[RootManager] Snapshotting state...")
+        self._state = "Conversation snapshot data"
+        return self._state
+    def resume(self, snapshot: Any) -> None:
+        print(f"[RootManager] Resuming state from: {snapshot}")
+        self._state = snapshot
 
 def example_snapshot_resume():
-    orchestrator = create_jiki(
+    root_manager = SimpleMemoryRootManager()
+    
+    # First orchestrator instance
+    orchestrator1 = Jiki(
+        conversation_root_manager=root_manager,
         auto_discover_tools=True,
         mcp_script_path="servers/calculator_server.py",
+        mcp_mode="stdio",
         trace=True
     )
-    first = orchestrator.process("What is 10 + 5?")
-    print("[Snapshot/Resume] First result =", first)
-    snapshot = orchestrator.snapshot()
+    print("\n[Snapshot/Resume] First interaction...")
+    orchestrator1.process("My favorite number is 17.")
+    # Assume snapshot is implicitly called by root_manager logic or manually
+    saved_state = root_manager.snapshot() 
+    orchestrator1.export_traces("advanced_snapshot_1.jsonl")
 
-    second = orchestrator.process("Multiply the result by 2.")
-    print("Second result =", second)
-
-    # Create a fresh orchestrator and restore to the previous snapshot
-    orchestrator2 = create_jiki(
-        auto_discover_tools=True,
+    # Second orchestrator instance, resuming state
+    print("\n[Snapshot/Resume] Creating second instance and resuming...")
+    orchestrator2 = Jiki(
+        conversation_root_manager=root_manager, # Re-use the same manager instance
+        auto_discover_tools=True, 
         mcp_script_path="servers/calculator_server.py",
+        mcp_mode="stdio",
         trace=True
     )
-    orchestrator2.resume(snapshot)
-    third = orchestrator2.process("Add 3 to the original result.")
-    print("Resumed result =", third)
+    # Manually trigger resume (in real app, this might happen on load)
+    root_manager.resume(saved_state)
+    print("\n[Snapshot/Resume] Second interaction (should know favorite number)...")
+    result = orchestrator2.process("What is my favorite number plus 3?")
+    print("[Snapshot/Resume] Result:", result) # Should ideally use 17
+    orchestrator2.export_traces("advanced_snapshot_2.jsonl")
+
 
 if __name__ == "__main__":
-    print("=== Example 1: Manual Tools ===")
+    print("--- Running Manual Tools Example ---")
     example_manual_tools()
-    print("\n=== Example 2: Sampling Config ===")
-    example_sampling_config()
-    print("\n=== Example 3: Snapshot/Resume ===")
+    print("\n--- Running Custom Sampling Example ---")
+    example_custom_sampling()
+    print("\n--- Running Snapshot/Resume Example ---")
     example_snapshot_resume() 

@@ -12,7 +12,7 @@ High‑level responsibilities
 2. Stream tokens from the LLM, intercepting ``<mcp_tool_call>`` blocks emitted
    by the model in‑flight.
 3. Validate tool calls against the configured schemas and dispatch them via an
-   :class:`~jiki.mcp_client.EnhancedMCPClient` implementation.
+   :class:`~jiki.mcp_client.JikiClient` implementation.
 4. Inject tool results back into the conversational context so the model can
    continue reasoning.
 5. Maintain a rolling message buffer that is trimmed to stay within the model's
@@ -22,15 +22,17 @@ High‑level responsibilities
 
 Typical Usage
 -------------
->>> from jiki import create_jiki
->>> orchestrator = create_jiki()
+>>> from jiki import Jiki # Use the main factory
+>>> orchestrator = Jiki()
 >>> response = orchestrator.process("What is 2 + 2?")
 >>> print(response)
 
 """
 from typing import List, Dict, Any, Optional
+import uuid # For generating unique conversation/turn IDs
+
 from jiki.utils.cleaning import clean_output
-from jiki.models.response import ToolCall
+from jiki.models.response import ToolCall, DetailedResponse
 from jiki.prompts.prompt_builder import IPromptBuilder, DefaultPromptBuilder
 from jiki.tool_client import IMCPClient
 from jiki.utils.context import trim_context
@@ -39,35 +41,44 @@ from jiki.utils.tool import parse_tool_call_content, validate_tool_call
 from jiki.utils.streaming import generate_and_intercept
 from jiki.utils.token import count_tokens
 from jiki.utils.logging import record_conversation_event
+from jiki.logging import TraceLogger # Import TraceLogger for type hinting
+from jiki.roots.conversation_root_manager import IConversationRootManager
 
 class JikiOrchestrator:
     """
     Central orchestration engine for Jiki, managing LLM messages, tool/resource calls, and conversation context.
+    
+    Typically instantiated via the `Jiki()` factory function for ease of use.
 
-    Example:
-        >>> from jiki import create_jiki
-        >>> orchestrator = create_jiki(
-        ...     model="anthropic/claude-3-7-sonnet", 
-        ...     tools=None, 
-        ...     mcp_mode="stdio"
+    Example (using factory):
+        >>> from jiki import Jiki
+        >>> orchestrator = Jiki(
+        ...     model="anthropic/claude-3-haiku-20240307", 
+        ...     auto_discover_tools=True,
+        ...     mcp_script_path="servers/calculator_server.py"
         ... )
         >>> result = orchestrator.process("What is 2 + 3?")
         >>> print(result)
     """
     def __init__(
         self,
-        model: Any,
+        model: Any, # Should be a model wrapper instance, e.g., LiteLLMModel
         mcp_client: IMCPClient,
         tools_config: List[Dict[str, Any]],
-        logger=None,
-        prompt_builder: Optional[IPromptBuilder] = None
+        logger: Optional[TraceLogger] = None,
+        prompt_builder: Optional[IPromptBuilder] = None,
+        conversation_root_manager: Optional[IConversationRootManager] = None
     ):
         """
-        :param model: LLM model wrapper (e.g., LiteLLMModel)
-        :param mcp_client: Tool client implementing IToolClient interface
-        :param tools_config: List of available tool schemas
-        :param logger: Optional logger for trace events
-        :param prompt_builder: Prompt builder abstraction (delegates prompt template generation)
+        Initialize the Jiki Orchestrator.
+        
+        Args:
+            model: LLM model wrapper instance (e.g., LiteLLMModel).
+            mcp_client: Tool client implementing the IMCPClient interface.
+            tools_config: List of available tool schemas (dictionaries).
+            logger: Optional TraceLogger instance for recording interactions.
+            prompt_builder: Optional custom prompt builder implementing IPromptBuilder.
+            conversation_root_manager: Optional manager for conversation state persistence.
         """
         self.model = model
         self.mcp_client = mcp_client
@@ -76,8 +87,24 @@ class JikiOrchestrator:
         self._tools_map = {name: tool for tool in tools_config if (name := tool.get("tool_name")) is not None}
         # Prompt builder abstraction (delegates prompt template generation)
         self.prompt_builder: IPromptBuilder = prompt_builder or DefaultPromptBuilder()
-        self.conversation_history: List[Dict[str, str]] = []
+        
+        # Logging and Tracing
         self.logger = logger
+        self.conversation_id = str(uuid.uuid4()) # Unique ID for this orchestrator instance/session
+        self._turn_id_counter = 0
+        
+        # Conversation State Management
+        # Use provided root manager or default to self (basic in-memory history)
+        self.root_manager = conversation_root_manager or self
+        self._messages: List[Dict[str, str]] = [] # Internal message history (LiteLLM format)
+        self._last_tool_calls: List[ToolCall] = [] # Tool calls from the most recent turn
+        self._last_traces: List[Dict] = [] # Raw traces from the most recent turn (if logger is active)
+
+    def _get_next_turn_id(self) -> str:
+        """Generates a unique ID for the next conversation turn."""
+        self._turn_id_counter += 1
+        return f"turn_{self._turn_id_counter}"
+
         self._last_tool_calls = []
         # In‑memory chat log in LiteLLM / OpenAI format
         self._messages: List[Dict[str, str]] = []
@@ -127,7 +154,8 @@ class JikiOrchestrator:
         # Trim context if oversized based on token count using token_utils
         trim_context(self._messages, lambda msgs: count_tokens(msgs, self.model.model_name), max_tokens_ctx)
 
-        record_conversation_event(self.conversation_history, "system", str(self._messages), self.logger)
+        # Pass the actual message list to the event recorder
+        record_conversation_event(self._messages, "system", str(self._messages), self.logger)
         final_answer = await self._generate_and_intercept(self._messages)
 
         self._messages.append({"role": "assistant", "content": final_answer})
@@ -155,7 +183,8 @@ class JikiOrchestrator:
             extract_thought_fn=extract_thought,
             clean_fn=clean_output,
             log_complete_trace_fn=log_complete,
-            log_conversation_fn=lambda role, content: record_conversation_event(self.conversation_history, role, content, self.logger),
+            # Pass the actual message list to the event recorder
+            log_conversation_fn=lambda role, content: record_conversation_event(self._messages, role, content, self.logger),
             context=messages,
         )
 
@@ -174,7 +203,8 @@ class JikiOrchestrator:
         if parse_error:
             if self.logger:
                 self.logger.debug(f"Tool call parse error: {parse_error}")
-            record_conversation_event(self.conversation_history, "system", f"<mcp_tool_result>\n{parse_error}\n</mcp_tool_result>", self.logger)
+            # Pass the actual message list to the event recorder
+            record_conversation_event(self._messages, "system", f"<mcp_tool_result>\\n{parse_error}\\n</mcp_tool_result>", self.logger)
             return parse_error
 
         # Assert tool_name is not None if parse_error is None
@@ -185,7 +215,8 @@ class JikiOrchestrator:
         if validation_error:
             if self.logger:
                 self.logger.debug(f"Tool call validation error: {validation_error}")
-            record_conversation_event(self.conversation_history, "system", f"<mcp_tool_result>\n{validation_error}\n</mcp_tool_result>", self.logger)
+            # Pass the actual message list to the event recorder
+            record_conversation_event(self._messages, "system", f"<mcp_tool_result>\\n{validation_error}\\n</mcp_tool_result>", self.logger)
             return validation_error
 
         # --- Execute Tool via MCP Client ---
@@ -202,8 +233,9 @@ class JikiOrchestrator:
             self._last_tool_calls.append(ToolCall(tool=tool_name, arguments=arguments, result=str(tool_result_content)))
             
             # Format the result for injection
-            result_block = f"<mcp_tool_result>\n{tool_result_content}\n</mcp_tool_result>"
-            record_conversation_event(self.conversation_history, "system", result_block, self.logger)
+            result_block = f"<mcp_tool_result>\\n{tool_result_content}\\n</mcp_tool_result>"
+            # Pass the actual message list to the event recorder
+            record_conversation_event(self._messages, "system", result_block, self.logger)
             return str(tool_result_content) # Return the actual result content
             
         except Exception as e:
@@ -211,8 +243,9 @@ class JikiOrchestrator:
                 # Log exception info for more details
                 self.logger.debug(f"Error calling tool '{tool_name}' via MCP client: {e}", exc_info=True)
             result_content = f"ERROR: Failed to execute tool '{tool_name}': {e}"
-            result_block = f"<mcp_tool_result>\n{result_content}\n</mcp_tool_result>"
-            record_conversation_event(self.conversation_history, "system", result_block, self.logger)
+            result_block = f"<mcp_tool_result>\\n{result_content}\\n</mcp_tool_result>"
+            # Pass the actual message list to the event recorder
+            record_conversation_event(self._messages, "system", result_block, self.logger)
             return result_content 
 
     def snapshot(self) -> Dict[str, Any]:
@@ -222,7 +255,7 @@ class JikiOrchestrator:
         # Make shallow copies to avoid external mutation
         return {
             "messages": list(self._messages),
-            "conversation_history": list(self.conversation_history),
+            "conversation_history": list(self._messages),
             "last_tool_calls": [
                 {"tool": tc.tool, "arguments": tc.arguments, "result": tc.result}
                 for tc in getattr(self, '_last_tool_calls', [])
@@ -244,7 +277,7 @@ class JikiOrchestrator:
         history = snapshot.get('conversation_history')
         if not isinstance(history, list):
             raise TypeError("snapshot['conversation_history'] must be a list")
-        self.conversation_history = list(history)
+        self._messages = list(history)
         # Restore last tool calls
         calls = snapshot.get('last_tool_calls', [])
         if not isinstance(calls, list):

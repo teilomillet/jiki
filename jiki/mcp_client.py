@@ -1,346 +1,231 @@
-from fastmcp import Client
-from jiki.transports.factory import ITransport, get_transport  # Transport interface and factory
-from jiki.tool_client import IToolClient
-from typing import Any, List, Dict
+import abc # Added for abstract base class
+import warnings # Added for deprecation warnings
 import traceback
 import json
-from jiki.serialization.helpers import json_serializer_default
 from pathlib import Path
+from typing import Any, List, Dict, Optional, Union, Callable
 
-class MCPClient:
+# Use specific ClientError for tool call errors
+from fastmcp import Client
+# from fastmcp.client import ClientError # Previous attempt
+from fastmcp.client.roots import RootsHandler, RootsList # Type hint for roots
+from mcp.types import ( # Import specific types for processing results
+    TextContent,
+    ImageContent,
+    Resource,
+    ResourceTemplate,
+    Tool,
+    TextResourceContents,
+    BlobResourceContents
+)
+
+from jiki.transports.factory import ITransport, get_transport # Keep for __init__ if needed, but Client infers now
+from jiki.tool_client import IMCPClient, IToolClient
+from jiki.serialization.helpers import json_serializer_default
+
+
+# BaseMCPClient is no longer needed as fastmcp.Client provides the API
+
+# --- Jiki Client (Concrete Implementation using fastmcp) ---
+
+# Ensure JikiClient explicitly satisfies the full IMCPClient protocol
+# Renamed to JikiClient for simplicity and project identity
+# No longer inherits from BaseMCPClient
+class JikiClient(IMCPClient):
     """
-    Low-level MCP client for direct tool invocation over a given transport.
+    The standard, full-featured MCP client for Jiki, built using `fastmcp`.
+    (Formerly known as FullMCPClient and EnhancedMCPClient)
 
-    Example:
-        # Using stdio transport to a local Python server
-        from fastmcp.client.transports import PythonStdioTransport
-        client = MCPClient(PythonStdioTransport('servers/calculator_server.py'))
-        result = await client.execute_tool_call('add', {'a': 2, 'b': 3})
+    Handles the complete MCP lifecycle using the fastmcp.Client:
+    - Transport management (inferred by fastmcp.Client).
+    - Initialization handshake (implicit in `async with Client(...)`).
+    - Tool discovery (`discover_tools` -> `client.list_tools`).
+    - Tool execution (`execute_tool_call` -> `client.call_tool`).
+    - Resource listing and reading (`list_resources` -> `client.list_resources`, etc.).
+    - Roots listing and change notification (`send_roots_list_changed`).
+    - Interaction tracing.
+
+    This is the default client used by `Jiki` and is recommended for most use cases.
+    It directly uses the `fastmcp` library.
+
+    Reference: https://gofastmcp.com/clients/client
     """
-    def __init__(self, connection: str):
+    def __init__(self,
+                 transport_source: Union[str, Path, Any], # Path, URL, or FastMCP instance
+                 roots: Optional[Union[RootsList, RootsHandler]] = None):
         """
-        :param connection: Connection string or transport for MCP server (e.g., 'python servers/calculator_server.py' or 'http://localhost:8000/mcp')
+        Initialize the Jiki MCP client using fastmcp.
+
+        :param transport_source: Source for the transport connection. This can be:
+                                 - Path to a server script (.py, .js) for stdio.
+                                 - URL (http/s for SSE, ws/s for WebSocket).
+                                 - A fastmcp.server.FastMCP instance for in-memory transport.
+                                 `fastmcp.Client` will infer the correct transport.
+                                 Reference: https://gofastmcp.com/clients/transports
+        :param roots: Optional list of root URIs or a callable returning them for the `roots` capability.
+                      Reference: https://gofastmcp.com/clients/client#roots
         """
-        self.connection = connection
-
-    async def execute_tool_call(self, tool_name: str, arguments: dict) -> str:
-        """
-        Call a tool on the connected MCP server and return the result as a string.
-        Complex results (lists, dicts) are serialized as JSON using a custom encoder.
-        """
-        async with Client(self.connection) as client:
-            result = await client.call_tool(tool_name, arguments)
-            
-            # Handle different response formats
-            processed_result: Any
-            if hasattr(result, 'content'):
-                # If multiple content blocks, concatenate all text blocks
-                if result.content:
-                    processed_result = ''.join(block.text for block in result.content)
-                else:
-                    processed_result = None
-            elif isinstance(result, list):
-                # If we receive a list of blocks (e.g., dicts with 'text'), join their text
-                try:
-                    processed_result = ''.join(
-                        getattr(block, 'text', block.get('text', ''))
-                        if isinstance(block, (dict, object)) else ''
-                        for block in result
-                    )
-                except Exception:
-                    processed_result = result
-            else:
-                # Use the raw result if it's not a fastmcp ToolResult object
-                processed_result = result
-
-            # Serialize non-string results to JSON for clarity
-            if isinstance(processed_result, str):
-                return processed_result # Return strings directly
-            elif processed_result is None:
-                return "" # Return empty string for None result
-            else:
-                try:
-                    # Serialize lists, dicts, bools, numbers, etc. to JSON
-                    # Use the custom default function here!
-                    return json.dumps(processed_result, default=json_serializer_default)
-                except TypeError as e:
-                    # This fallback should now be much rarer
-                    print(f"[WARN] Could not JSON-serialize result type {type(processed_result)} even with custom serializer, falling back to str(): {e}")
-                    return str(processed_result)
-
-
-# MCP wrapper to handle errors and ensure proper MCP formatting 
-class EnhancedMCPClient(IToolClient):
-    """
-    Enhanced MCP client that ensures proper XML tagging and error handling.
-
-    Example usage:
-        import asyncio
-        from jiki.mcp_client import EnhancedMCPClient
-
-        async def demo():
-            client = EnhancedMCPClient(
-                transport_type="stdio",
-                script_path="servers/calculator_server.py"
-            )
-            tools = await client.discover_tools()
-            result = await client.execute_tool_call("add", {"a": 1, "b": 2})
-            resources = await client.list_resources()
-            contents = await client.read_resource("file:///path/to/data.txt")
-            traces = client.get_interaction_traces()
-            print(tools, result, resources, contents, traces)
-
-        asyncio.run(demo())
-    """
-    def __init__(self, transport_type: str = "stdio", script_path: str = None, transport: ITransport = None, roots: list[str] | None = None):
-        """
-        Initialize the enhanced MCP client with configurable transport
-        
-        :param transport_type: Type of transport to use ("stdio" or "sse")
-        :param script_path: Path to the MCP server script or URL for SSE
-        :param transport: Optional pre-created ITransport instance to inject.
-        :param roots: Optional list of root URIs or a callable returning such a list.
-
-        Example:
-            client = EnhancedMCPClient(
-                transport_type="sse",
-                script_path="http://localhost:8000/mcp"
-            )
-        """
-        self.transport_type = transport_type
-        self.script_path = script_path or "servers/calculator_server.py"
         self.interaction_traces: List[Dict[str, Any]] = []
-        
-        # Setup roots handler for MCP "roots" capability
-        if roots is None:
-            # Default to current working directory
-            default_root = Path.cwd().resolve().as_uri()
-            self.roots_handler = [default_root]
-        elif isinstance(roots, list):
-            if not all(isinstance(r, str) for r in roots):
-                raise TypeError("All roots must be string URIs")
-            self.roots_handler = roots
-        elif callable(roots):
-            self.roots_handler = roots
-        else:
-            raise TypeError("roots must be a list of URIs or a callable returning such a list")
-        
-        # Allow injecting a custom transport instance directly, otherwise use factory
-        if transport is not None:
-            selected_transport = transport
-        else:
-            selected_transport = get_transport(transport_type, script_path)
-        # Create the primary MCP client
-        self.mcp_client = MCPClient(selected_transport)
-        
-        # Track whether handshake has been performed
-        self._initialized = False
+        self._initialized = False # Flag indicating if initialize() was called (for compatibility)
+
+        # Store transport source and roots handler for use in `async with Client(...)`
+        self._transport_source = transport_source
+        self.roots_handler = roots # fastmcp.Client accepts this directly
+
+        # Note: The actual transport instance and connection are managed by
+        # `fastmcp.Client` within the `async with` blocks of the methods below.
+
+    @staticmethod
+    def _process_mcp_result(result_content_list: List[Union[TextContent, ImageContent, Any]]) -> str:
+        """
+        Processes the raw result list from a fastmcp call (like call_tool) into a single string.
+        Handles TextContent and ImageContent specifically. Serializes others to JSON.
+        """
+        processed_parts = []
+        if not isinstance(result_content_list, list):
+            # Handle cases where the result might not be a list (though call_tool should return one)
+            result_content_list = [result_content_list]
+
+        for item in result_content_list:
+            if isinstance(item, TextContent):
+                processed_parts.append(item.text or "")
+            elif isinstance(item, ImageContent):
+                # Represent image content generically for now
+                mime_type = getattr(item, 'mimeType', 'image/unknown')
+                processed_parts.append(f"[Image Content ({mime_type})]")
+            elif item is None:
+                continue # Skip None items
+            else:
+                # Serialize unknown types to JSON
+                try:
+                    processed_parts.append(json.dumps(item, default=json_serializer_default))
+                except TypeError:
+                    processed_parts.append(str(item)) # Fallback
+
+        return "\\n".join(processed_parts)
+
+
+    # --- Implementation of IMCPClient Public Interface ---
+
+    async def initialize(self, *args, **kwargs) -> None:
+        """
+        Marks the client as initialized (for compatibility with callers).
+        The actual MCP handshake happens implicitly when the first
+        `async with Client(...)` block is entered in other methods.
+        """
+        # This method primarily exists for compatibility if callers expect it.
+        # The real handshake is handled by fastmcp.Client on connection.
+        self._initialized = True
+        print("[DEBUG] JikiClient conceptually initialized (handshake handled by fastmcp.Client on first use).")
+        # Log conceptual handshake for tracing consistency if needed
+        # (though fastmcp might handle this internally)
+        init_req_log = {"method": "initialize", "params": {"protocolVersion": "unknown"}, "jsonrpc": "2.0", "id": 0}
+        init_json_log = json.dumps(init_req_log, indent=2)
+        notif_log = {"method": "initialized", "params": {}, "jsonrpc": "2.0"}
+        notif_json_log = json.dumps(notif_log, indent=2)
+        self.interaction_traces.append({"handshake": {"initialize_sent": init_json_log}})
+        self.interaction_traces.append({"handshake": {"initialized_sent": notif_json_log}})
+
 
     async def discover_tools(self) -> List[Dict[str, Any]]:
-        """
-        Connect to the MCP server and retrieve the list of available tool schemas.
-        
-        Returns:
-            List[Dict[str, Any]]: List of tool schema dicts.
-
-        Example:
-            tools = await client.discover_tools()
-        """
-        # Perform initialization handshake once
-        if not self._initialized:
-            await self.initialize()
-        print("[INFO] Attempting to discover tools from MCP server...")
-        # We need to use the underlying transport configuration from the MCPClient
-        # that EnhancedMCPClient wraps. Let's access it directly.
-        transport = self.mcp_client.connection # Access the transport/connection string
-        
+        """Discover tools using the `client.list_tools()` method."""
+        print("[INFO] Discovering tools via fastmcp.Client 'list_tools'...")
         try:
-            # Create a standard fastmcp Client using the same transport
-            async with Client(transport, roots=self.roots_handler) as client:
-                # List available tools using the standard client method
-                tool_list = await client.list_tools()
-                
-                # The tool_list likely contains Tool objects (or similar structures from fastmcp)
-                # We need to convert them into the dictionary format expected by JikiOrchestrator.
-                # Assuming tool_list is a list of objects with attributes like name, description, inputSchema.
-                # The exact structure depends on fastmcp's return type for list_tools.
-                # Let's assume a simple structure for now. We might need to adjust based on fastmcp specifics.
-                
-                tools_config = []
-                for tool in tool_list:
-                    # Basic conversion - might need refinement based on actual Tool object structure
-                    schema = {
-                        "tool_name": getattr(tool, 'name', None),
-                        "description": getattr(tool, 'description', ''),
-                        # Use JSON-schema properties to define arguments
-                        "arguments": getattr(tool, 'inputSchema', {}).get('properties', {})
-                    }
-                    if schema["tool_name"]:
-                         # Add required field if present in the original schema
-                         if 'required' in getattr(tool, 'inputSchema', {}):
-                              schema['required'] = getattr(tool, 'inputSchema', {})['required']
-                         tools_config.append(schema)
-                    else:
-                         print(f"[WARN] Discovered tool object missing 'name': {tool}")
+            # Connect and make the call using fastmcp.Client context manager
+            async with Client(self._transport_source, roots=self.roots_handler) as client:
+                tool_list_mcp: List[Tool] = await client.list_tools() # Returns List[mcp.types.Tool]
 
-                print(f"[INFO] Discovered {len(tools_config)} tools.")
-                return tools_config
+            # Process the result into the expected dictionary format
+            tools_config = []
+            for tool in tool_list_mcp:
+                # Adapt based on mcp.types.Tool structure (assuming attributes like name, description, inputSchema)
+                schema = {
+                    "tool_name": getattr(tool, 'name', None),
+                    "description": getattr(tool, 'description', ''),
+                    # Assuming inputSchema has .properties and optional .required
+                    "arguments": getattr(tool, 'inputSchema', {}).get('properties', {}),
+                    "required": getattr(tool, 'inputSchema', {}).get('required', [])
+                }
+                if schema["tool_name"]:
+                    tools_config.append(schema)
+                else:
+                    print(f"[WARN] Discovered tool object missing 'name': {tool}")
 
-        except ConnectionRefusedError as e:
-            # Handle connection refused specifically
-            raise RuntimeError(f"MCP Server connection refused at {transport}") from e
+            print(f"[INFO] Discovered {len(tools_config)} tools.")
+            return tools_config
+
+        except ConnectionError as e:
+             print(f"[ERROR] Connection failed during tool discovery: {e}")
+             raise RuntimeError(f"Failed to connect to MCP server for tool discovery: {e}") from e
         except Exception as e:
-            # Catch other potential errors (e.g., server not running, protocol errors)
-            # Do not print error here; let the caller handle the RuntimeError
-            # import traceback
-            # traceback.print_exc() # Optionally uncomment for deep debugging
+            print(f"[ERROR] Failed to discover tools via fastmcp: {e}")
+            # Propagate as RuntimeError
             raise RuntimeError(f"Failed to discover tools from MCP server: {e}") from e
 
+
     async def execute_tool_call(self, tool_name: str, arguments: dict) -> str:
-        """
-        Execute a tool call using MCP with proper formatting and error handling
+        """Execute a tool call using the `client.call_tool` method with tracing."""
+        # Format for logging
+        tool_call_json = {"tool_name": tool_name, "arguments": arguments}
+        formatted_tool_call = json.dumps(tool_call_json, indent=2, default=json_serializer_default)
+        mcp_tool_call_log = f"<mcp_tool_call>\\n{formatted_tool_call}\\n</mcp_tool_call>"
+        print(f"[DEBUG] Executing MCP tool call via fastmcp.Client: {tool_name} with arguments: {arguments}")
+        self.interaction_traces.append({"tool_call": mcp_tool_call_log, "used_mcp": True}) # Log call attempt
 
-        :param tool_name: Name of the tool to invoke.
-        :param arguments: Dict of arguments for the tool.
-        :return: String result or JSON error payload.
+        result_str = ""
+        error_payload_json = None
 
-        Example:
-            result = await client.execute_tool_call(
-                "weather", {"city": "Paris"}
-            )
-        """
-        # Ensure initialization handshake has run
-        if not self._initialized:
-            await self.initialize()
-        # Format the tool call into proper MCP format for logging
-        tool_call_json = {
-            "tool_name": tool_name,
-            "arguments": arguments
-        }
-        formatted_tool_call = json.dumps(tool_call_json, indent=2)
-        mcp_tool_call = f"<mcp_tool_call>\n{formatted_tool_call}\n</mcp_tool_call>"
-        
         try:
-            print(f"[DEBUG] Executing MCP tool call: {tool_name} with arguments: {arguments}")
-            
-            # Execute the tool call via MCP infrastructure
-            result = await self.mcp_client.execute_tool_call(tool_name, arguments)
-            
-            # If we got back a JSON array of text blocks, extract and concatenate their 'text' fields
-            if isinstance(result, str) and result.strip().startswith('['):
-                try:
-                    blocks = json.loads(result)
-                    if isinstance(blocks, list):
-                        text_parts = []
-                        for blk in blocks:
-                            if isinstance(blk, dict) and 'text' in blk:
-                                text_parts.append(blk['text'])
-                        # Replace result with joined text
-                        result = ''.join(text_parts)
-                except Exception:
-                    # Leave result unchanged if parsing fails
-                    pass
-            
-            # Format as MCP tool result
-            mcp_tool_result = f"<mcp_tool_result>\n{result}\n</mcp_tool_result>"
-            
-            # Log successful trace
-            self.interaction_traces.append({
-                "tool_call": mcp_tool_call,
-                "tool_result": mcp_tool_result,
-                "used_mcp": True
-            })
-            
-            return result
-            
+            # Use fastmcp.Client context manager
+            async with Client(self._transport_source, roots=self.roots_handler) as client:
+                # Call the specific tool method
+                raw_result_list: List[Union[TextContent, ImageContent]] = await client.call_tool(
+                    name=tool_name,
+                    arguments=arguments
+                )
+
+            # Process the successful result list using the static method
+            result_str = JikiClient._process_mcp_result(raw_result_list)
+
+        # Handle connection or other unexpected errors
         except Exception as e:
-            # Log the error details
-            error_details = traceback.format_exc()
-            print(f"[ERROR] MCP tool call failed: {e}\n{error_details}")
+            error_message = f"Failed MCP communication for tool '{tool_name}': {e}"
+            print(f"[ERROR] {error_message}\\n{traceback.format_exc()}")
+            code = -32000 # Generic communication error
+            error_payload = {"error": {"code": code, "message": error_message}}
+            error_payload_json = json.dumps(error_payload)
 
-            # Determine JSON-RPC error code (use e.code if available, otherwise InternalError)
-            code = getattr(e, 'code', -32603)
-            # Build JSON-RPC error object
-            error_payload = {"error": {"code": code, "message": str(e)}}
-            error_json = json.dumps(error_payload)
-            mcp_tool_result = f"<mcp_tool_result>\n{error_json}\n</mcp_tool_result>"
+        # Format result/error for logging and return
+        if error_payload_json:
+            mcp_tool_result_log = f"<mcp_tool_result>\\n{error_payload_json}\\n</mcp_tool_result>"
+            # Find the previously logged call and add the error result
+            for trace in reversed(self.interaction_traces):
+                 if "tool_call" in trace and trace["tool_call"] == mcp_tool_call_log:
+                      trace["tool_result"] = mcp_tool_result_log
+                      trace["error"] = error_payload["error"]["message"]
+                      trace["error_code"] = error_payload["error"]["code"]
+                      break
+            return error_payload_json # Return JSON-RPC error payload
+        else:
+            mcp_tool_result_log = f"<mcp_tool_result>\\n{result_str}\\n</mcp_tool_result>"
+            # Find the previously logged call and add the success result
+            for trace in reversed(self.interaction_traces):
+                 if "tool_call" in trace and trace["tool_call"] == mcp_tool_call_log:
+                      trace["tool_result"] = mcp_tool_result_log
+                      break
+            return result_str
 
-            # Log error trace with code
-            self.interaction_traces.append({
-                "tool_call": mcp_tool_call,
-                "tool_result": mcp_tool_result,
-                "used_mcp": True,
-                "error": str(e),
-                "error_code": code
-            })
-            
-            # Return structured JSON-RPC error payload
-            return error_json
-
-    def get_interaction_traces(self):
-        """
-        Return all logged interaction traces for debugging and analysis.
-
-        :return: List of trace dicts containing calls, results, and handshake info.
-        """
-        return self.interaction_traces 
-
-    async def initialize(self, protocol_version: str = "2025-03-26",
-                          capabilities: Dict[str, Any] = None,
-                          client_info: Dict[str, str] = None) -> None:
-        """
-        Perform MCP initialize/initialized handshake, exposing its JSON-RPC payloads in logs and traces.
-
-        :param protocol_version: Protocol version identifier.
-        :param capabilities: Additional capabilities to negotiate.
-        :param client_info: Client metadata dict with 'name' and 'version'.
-        """
-        # Default capabilities, enabling roots listing notifications
-        default_caps = {
-            "tools": {"listChanged": False},
-            "resources": {"listChanged": False},
-            "prompts": {"listChanged": False},
-            "sampling": {},
-            "roots": {"listChanged": True},
-        }
-        if capabilities:
-            default_caps.update(capabilities)
-        # Default client info
-        info = client_info or {"name": "jiki", "version": "0.1.0"}
-        # Build initialize request
-        init_req = {
-            "method": "initialize",
-            "params": {
-                "protocolVersion": protocol_version,
-                "capabilities": default_caps,
-                "clientInfo": info
-            },
-            "jsonrpc": "2.0",
-            "id": 0
-        }
-        init_json = json.dumps(init_req, indent=2)
-        mcp_init_call = f"<mcp_initialize>\n{init_json}\n</mcp_initialize>"
-        print(f"[DEBUG] Sending MCP initialize call: {mcp_init_call}")
-        self.interaction_traces.append({"handshake": {"initialize": init_json}})
-        # Build initialized notification
-        notif = {"method": "initialized", "params": {}, "jsonrpc": "2.0"}
-        notif_json = json.dumps(notif, indent=2)
-        mcp_notif = f"<mcp_initialized>\n{notif_json}\n</mcp_initialized>"
-        print(f"[DEBUG] Sending MCP initialized notification: {mcp_notif}")
-        self.interaction_traces.append({"handshake": {"initialized": notif_json}})
-        self._initialized = True 
 
     async def list_resources(self) -> List[Dict[str, Any]]:
-        """List available resources from MCP server."""
-        if not self._initialized:
-            await self.initialize()
-        transport = self.mcp_client.connection
+        """List resources using `client.list_resources`."""
+        print("[INFO] Listing resources via fastmcp.Client 'list_resources'...")
         try:
-            async with Client(transport, roots=self.roots_handler) as client:
-                resources_result = await client.list_resources()
-            raw_list = getattr(resources_result, 'resources', resources_result)
-            resources: List[Dict[str, Any]] = []
-            for r in raw_list:
+            async with Client(self._transport_source, roots=self.roots_handler) as client:
+                resource_list_mcp: List[Resource] = await client.list_resources()
+
+            # Process into dict format
+            resources = []
+            for r in resource_list_mcp:
                 resources.append({
                     'uri': getattr(r, 'uri', None),
                     'name': getattr(r, 'name', None),
@@ -348,55 +233,90 @@ class EnhancedMCPClient(IToolClient):
                     'mimeType': getattr(r, 'mimeType', None),
                 })
             return resources
+        except ConnectionError as e:
+             print(f"[ERROR] Connection failed during resource listing: {e}")
+             raise RuntimeError(f"Failed to connect to MCP server for resource listing: {e}") from e
         except Exception as e:
             print(f"[ERROR] Failed to list resources: {e}")
-            return []
+            return [] # Return empty list on failure as per previous logic
+
 
     async def read_resource(self, uri: str) -> List[Dict[str, Any]]:
-        """Read resource content from MCP server."""
-        if not self._initialized:
-            await self.initialize()
-        transport = self.mcp_client.connection
+        """Read resource using `client.read_resource`."""
+        print(f"[INFO] Reading resource via fastmcp.Client 'read_resource': {uri}")
         try:
-            async with Client(transport, roots=self.roots_handler) as client:
-                read_result = await client.read_resource(uri)
-            contents = getattr(read_result, 'contents', None)
-            if contents is None:
-                contents = [read_result]
-            resource_contents: List[Dict[str, Any]] = []
-            for c in contents:
-                resource_contents.append({
-                    'uri': getattr(c, 'uri', None),
-                    'mimeType': getattr(c, 'mimeType', None),
-                    'text': getattr(c, 'text', None),
-                })
+            async with Client(self._transport_source, roots=self.roots_handler) as client:
+                # Returns List[TextResourceContents | BlobResourceContents]
+                content_list_mcp: List[Union[TextResourceContents, BlobResourceContents]] = await client.read_resource(uri=uri)
+
+            # Process into dict format
+            resource_contents = []
+            for c in content_list_mcp:
+                 if isinstance(c, TextResourceContents):
+                     resource_contents.append({
+                           'uri': getattr(c, 'uri', uri),
+                           'mimeType': getattr(c, 'mimeType', 'text/plain'),
+                           'text': getattr(c, 'text', None),
+                     })
+                 elif isinstance(c, BlobResourceContents):
+                     # Represent blob generically for now
+                     resource_contents.append({
+                           'uri': getattr(c, 'uri', uri),
+                           'mimeType': getattr(c, 'mimeType', 'application/octet-stream'),
+                           'text': f"[Blob Content ({getattr(c, 'mimeType', 'unknown')})]",
+                     })
             return resource_contents
+        except ConnectionError as e:
+             print(f"[ERROR] Connection failed during resource reading ({uri}): {e}")
+             raise RuntimeError(f"Failed to connect to MCP server for resource reading: {e}") from e
         except Exception as e:
             print(f"[ERROR] Failed to read resource {uri}: {e}")
-            return []
+            return [] # Return empty list on failure
 
-    async def list_roots(self) -> List[Dict[str, Any]]:
-        """List available roots from MCP server."""
-        if not self._initialized:
-            await self.initialize()
-        transport = self.mcp_client.connection
-        try:
-            async with Client(transport, roots=self.roots_handler) as client:
-                roots_res = await client.list_roots()
-            raw = getattr(roots_res, 'roots', roots_res)
-            return [{'uri': getattr(r, 'uri', None), 'name': getattr(r, 'name', None)} for r in raw]
-        except Exception as e:
-            print(f"[ERROR] Failed to list roots: {e}")
-            return []
+    # list_roots is removed as it's not directly available in fastmcp.Client API
 
     async def send_roots_list_changed(self) -> None:
-        """Notify server of roots list change."""
-        if not self._initialized:
-            await self.initialize()
-        transport = self.mcp_client.connection
+        """Notify server of roots list change via `client.send_roots_list_changed`."""
+        print("[INFO] Sending roots list changed notification via fastmcp.Client...")
         try:
-            async with Client(transport, roots=self.roots_handler) as client:
+            async with Client(self._transport_source, roots=self.roots_handler) as client:
                 await client.send_roots_list_changed()
             self.interaction_traces.append({'notification': 'roots/list_changed'})
+        except ConnectionError as e:
+             print(f"[ERROR] Connection failed sending roots changed notification: {e}")
+             # Decide if this should raise or just log
         except Exception as e:
-            print(f"[ERROR] Failed to send roots list changed notification: {e}") 
+            print(f"[ERROR] Failed to send roots list changed notification: {e}")
+
+    def get_interaction_traces(self) -> List[Dict[str, Any]]:
+        """
+        Return all logged interaction traces for debugging and analysis.
+        """
+        return self.interaction_traces
+
+# --- Deprecation Warnings & Aliases ---
+
+warnings.filterwarnings("default", category=DeprecationWarning)
+
+# Simple Aliases for backward compatibility with warnings
+def _warn_and_init(cls, new_name):
+    original_init = cls.__init__
+    def warned_init(self, *args, **kwargs):
+        warnings.warn(
+            f"{cls.__name__} is deprecated and will be removed in a future version. Use {new_name} instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        original_init(self, *args, **kwargs)
+    return warned_init
+
+# BaseMCPClient removed, so MCPClient alias is no longer meaningful/correct. Remove it.
+# class MCPClient(BaseMCPClient):
+#      __doc__ = BaseMCPClient.__doc__ # Copy docstring
+#      __init__ = _warn_and_init(BaseMCPClient, "BaseMCPClient") # This would fail
+
+# Define EnhancedMCPClient as an alias for JikiClient with a warning
+class EnhancedMCPClient(JikiClient): # Inherit from the NEW name JikiClient
+     __doc__ = JikiClient.__doc__ # Copy docstring from NEW name
+     # Update the warning message to point to the NEW name
+     __init__ = _warn_and_init(JikiClient, "JikiClient")

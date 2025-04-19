@@ -17,20 +17,21 @@ Exit the chat with Ctrl-D, Ctrl-C, or by typing `exit`.
 
 import sys
 
-# Only need create_jiki from the library
-from jiki import create_jiki
+# Only need Jiki from the library
+from jiki import Jiki
 
 def main():
     try:
         # 1. Create the orchestrator instance using auto-discovery
         print("[INFO] Using default model and discovering tools from servers/calculator_server.py...", file=sys.stderr)
-        orchestrator = create_jiki(
-            # model="anthropic/claude-3-7-sonnet-latest", # Use default from create_jiki
+        orchestrator = Jiki(
+            # model="anthropic/claude-3-7-sonnet-latest", # Use default from Jiki
             # tools=... # Tools are discovered, so this argument is omitted
             trace=True, # Interactive mode implies tracing
-            # trace_dir=None, # Use default from create_jiki
+            # trace_dir=None, # Use default from Jiki
             auto_discover_tools=True, # Discover tools from the server
-            mcp_script_path="servers/calculator_server.py" # Specify the server script path
+            mcp_script_path="servers/calculator_server.py", # Specify the server script path
+            mcp_mode="stdio", # Default mode
         )
 
         # 2. Launch the built-in CLI frontend

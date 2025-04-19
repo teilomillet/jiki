@@ -3,10 +3,11 @@ Jiki - A flexible LLM orchestration framework with built-in tool calling capabil
 """
 import asyncio
 import sys
+from typing import Optional, Union, List, Dict, Any
 
 from .orchestrator import JikiOrchestrator
 from .models.litellm import LiteLLMModel
-from .mcp_client import MCPClient, EnhancedMCPClient
+from .mcp_client import JikiClient, EnhancedMCPClient
 from .logging import TraceLogger
 from .tools.config import load_tools_config
 from .tools.tool import Tool
@@ -23,139 +24,139 @@ from .roots.root_manager import IRootManager
 __all__ = [
     'JikiOrchestrator',
     'LiteLLMModel',
-    'MCPClient',
+    'JikiClient',
     'EnhancedMCPClient',
     'TraceLogger',
     'load_tools_config',
-    'create_jiki',
+    'Jiki',
     'Tool',
     'DetailedResponse',
     'ToolCall',
     'IConversationRootManager',
     'IRootManager',
+    'ISamplerConfig',
+    'SamplerConfig',
 ]
 
-def create_jiki(
-    model: str = "anthropic/claude-3-7-sonnet-latest",
-    tools=None,
-    mcp_mode: str = "stdio",
-    mcp_script_path: str = None,
-    trace: bool = True,
-    trace_dir: str = None,
+def Jiki(
+    model: str = "anthropic/claude-3-sonnet-20240229",
+    tools: Optional[Union[str, List[Dict[str, Any]]]] = None,
     auto_discover_tools: bool = False,
-    sampler_config: ISamplerConfig = None,
-    roots: list[str] | None = None,  # Optional file:// URIs for MCP roots
-    conversation_root_manager: IConversationRootManager = None,
+    mcp_mode: str = "stdio", # or "sse"
+    mcp_script_path: Optional[str] = None,
+    mcp_url: Optional[str] = None,
+    trace: bool = True, 
+    trace_dir: Optional[str] = "interaction_traces",
+    conversation_root_manager: Optional[IConversationRootManager] = None,
+    prompt_builder: Optional[Any] = None, # TODO: Type hint IPromptBuilder once circular imports resolved
+    sampler_config: Optional[ISamplerConfig] = None
 ) -> JikiOrchestrator:
     """
-    Create a pre-configured Jiki orchestrator with a streamlined interface.
-    
+    Factory function to create and configure a JikiOrchestrator instance.
+
+    This is the main entry point for easily setting up Jiki.
+    It initializes the necessary components like the model wrapper, 
+    MCP client, tools configuration, and logger based on the provided arguments.
+
     Args:
-        model (str): The model name to use
-        tools (Union[str, List[Union[str, Tool, dict]]]): Tool configuration - can be a file path,
-                                                        a list of tool names, a list of Tool objects,
-                                                        or a list of tool config dicts. Ignored if auto_discover_tools=True.
-        mcp_mode (str): MCP transport mode ("stdio" or "sse")
-        mcp_script_path (str): Path to MCP server script (or URL for SSE). Required if auto_discover_tools=True.
-        trace (bool): Whether to enable interaction tracing
-        trace_dir (str): Directory to save traces (None for memory only)
-        auto_discover_tools (bool): If True, discover tools directly from the MCP server
-                                    via `mcp_client.discover_tools()` instead of using the `tools` argument. Defaults to False.
-        sampler_config (ISamplerConfig): Optional sampler configuration for the model
-        roots (list[str] | None): Optional file:// URIs for MCP roots
-        conversation_root_manager (IConversationRootManager): Optional conversation root manager
+        model: Name of the language model to use (via LiteLLM).
+        tools: Tool configuration. Can be:
+               - Path to a JSON file defining tools.
+               - A list of tool definition dictionaries.
+               - None (if using auto-discovery).
+        auto_discover_tools: If True, attempts to discover tools from the MCP endpoint.
+                             Requires `mcp_script_path` or `mcp_url`.
+        mcp_mode: Transport mode for MCP client ('stdio' or 'sse').
+        mcp_script_path: Path to the script for stdio MCP transport.
+        mcp_url: URL for the Server-Sent Events (SSE) MCP endpoint.
+        trace: Enable/disable interaction tracing.
+        trace_dir: Directory to save trace logs.
+        conversation_root_manager: Optional custom manager for conversation state.
+        prompt_builder: Optional custom prompt builder.
+        sampler_config: Optional custom sampler configuration.
 
     Returns:
-        JikiOrchestrator: Configured orchestrator instance
-        
+        An initialized JikiOrchestrator instance.
+
     Raises:
-        ValueError: If auto_discover_tools is True but mcp_script_path (or equivalent connection info) is not provided.
-        ValueError: If both tools and auto_discover_tools=True are provided.
-        RuntimeError: If tool discovery fails.
+        ValueError: If configuration is invalid (e.g., auto-discovery without endpoint).
     """
-    # Parameter validation
-    if auto_discover_tools and tools is not None:
-        raise ValueError("Cannot provide 'tools' argument when 'auto_discover_tools' is True.")
-    if auto_discover_tools and not mcp_script_path:
-         # Check mcp_mode as well? SSE might imply a default URL? For now, require explicit path/URL.
-         raise ValueError("'mcp_script_path' (or connection URL for SSE) must be provided when 'auto_discover_tools' is True.")
+    # Initialize logger first
+    logger = TraceLogger(log_dir=trace_dir) if trace else None
 
-    # Create the model with optional sampling configuration
-    model_instance = LiteLLMModel(model, sampler_config)
-    
-    # Create the logger if enabled
-    logger = None
-    if trace:
-        # Pass trace_dir to TraceLogger constructor
-        logger = TraceLogger(log_dir=trace_dir) if trace_dir else TraceLogger()
-    
-    # Create the MCP client
-    # Assuming EnhancedMCPClient is still the desired client here
-    mcp_client = EnhancedMCPClient(
-        transport_type=mcp_mode,
-        script_path=mcp_script_path,
-        roots=roots
-    )
-    
-    # Process tools configuration
-    tools_config = []
+    # Configure MCP client
+    connection_info = {}
+    if mcp_mode == "stdio":
+        if not mcp_script_path:
+            # Default to example server if none provided and auto-discovery is on
+            if auto_discover_tools:
+                default_script = "servers/calculator_server.py"
+                print(f"[WARN] mcp_script_path not provided for stdio mode with auto-discovery. Defaulting to {default_script}", file=sys.stderr)
+                mcp_script_path = default_script
+            else:
+                # If not auto-discovering, we might not need a script path if no tools are expected to be called.
+                # However, it's safer to require it if tools *might* be defined or discovered later.
+                # For now, allow proceeding but maybe log a warning if tools are also not provided.
+                if not tools:
+                     print("[WARN] mcp_script_path not provided for stdio mode, and no tools defined. Tool calls will fail.", file=sys.stderr)
+        connection_info = {"type": "stdio", "script_path": mcp_script_path}
+    elif mcp_mode == "sse":
+        if not mcp_url:
+            raise ValueError("mcp_url must be provided for SSE mode")
+        connection_info = {"type": "sse", "url": mcp_url}
+    else:
+        raise ValueError(f"Unsupported mcp_mode: {mcp_mode}")
+
+    # Use JikiClient as the default, full-featured client
+    # Provide the script path or URL as the transport source
+    transport_source = connection_info.get("script_path") or connection_info.get("url")
+    mcp_client = JikiClient(transport_source)
+
+    # --- Tool Configuration Loading ---
+    actual_tools_config = []
     if auto_discover_tools:
-        # Discover tools from MCP server
+        if not mcp_script_path and not mcp_url:
+            raise ValueError("mcp_script_path or mcp_url required for auto_discover_tools")
+        print("[INFO] Auto-discovering tools...")
+        # Run discovery asynchronously
         try:
-            # Run discovery asynchronously
-            tools_config = asyncio.run(mcp_client.discover_tools())
-        except RuntimeError as e:
-             print(f"[ERROR] Auto-discovery of tools failed: {e}", file=sys.stderr)
-             raise # Re-raise the error to halt execution
+            # Ensure client is initialized before discovery
+            asyncio.run(mcp_client.initialize()) 
+            actual_tools_config = asyncio.run(mcp_client.discover_tools())
+            print(f"[INFO] Discovered {len(actual_tools_config)} tools.")
         except Exception as e:
-             # Catch any other unexpected errors during discovery
-             print(f"[ERROR] Unexpected error during tool auto-discovery: {e}", file=sys.stderr)
-             import traceback
-             traceback.print_exc()
-             raise RuntimeError(f"Unexpected error during tool auto-discovery: {e}") from e
-             
-    elif tools is not None:
-        # Load/process tools from the 'tools' argument as before
-        if isinstance(tools, str):
-            # Load from file path
-            try:
-                tools_config = load_tools_config(tools)
-            except FileNotFoundError:
-                 raise FileNotFoundError(f"Tools configuration file not found: {tools}")
-        elif isinstance(tools, list):
-            # Process list of tools
-            for tool_item in tools: # Renamed loop variable
-                if isinstance(tool_item, str):
-                    # Handle tool name (look up in default tools?) - This part might need rethinking or removal if auto-discovery is the primary path
-                    # For now, keep existing logic for non-auto-discovery case.
-                    # Consider if default tools make sense anymore. Perhaps deprecate?
-                    # default_tool = _get_default_tool(tool_item) # Assuming _get_default_tool exists
-                    # if default_tool:
-                    #     tools_config.append(default_tool)
-                    # else:
-                    raise ValueError("Providing tool names as strings is not supported when not using auto-discovery. Provide full schema dict or Tool object, or use a config file.")
-                elif isinstance(tool_item, Tool):
-                    # Convert Tool object to config dict
-                    tools_config.append(tool_item.to_dict())
-                elif isinstance(tool_item, dict):
-                    # Already in config format, basic validation?
-                    if "tool_name" in tool_item and "description" in tool_item and "arguments" in tool_item:
-                         tools_config.append(tool_item)
-                    else:
-                         raise ValueError(f"Invalid tool dictionary format: {tool_item}")
-                else:
-                    raise TypeError(f"Unsupported type in tools list: {type(tool_item)}")
-        else:
-             raise TypeError(f"Unsupported type for 'tools' argument: {type(tools)}. Expected file path (str) or list.")
-    # else: tools is None and not auto_discover_tools -> tools_config remains [] (no tools)
+            print(f"[ERROR] Failed to auto-discover tools: {e}", file=sys.stderr)
+            # Decide if we should raise or continue without tools
+            raise # Re-raise for now, as auto-discovery failure is likely critical
+    elif isinstance(tools, str):
+        # Load from file path
+        actual_tools_config = load_tools_config(tools)
+    elif isinstance(tools, list):
+        # Assume it's already a list of dicts
+        actual_tools_config = tools
+    elif tools is None:
+        # No tools provided or discovered
+        actual_tools_config = []
+    else:
+        raise TypeError("'tools' must be a file path (str), list of dicts, or None")
+        
+    if not actual_tools_config:
+        print("[WARN] No tools configured or discovered.", file=sys.stderr)
 
-    # Create orchestrator
-    orchestrator = JikiOrchestrator(model_instance, mcp_client, tools_config, logger=logger)
-    
-    # Attach helper methods using the imported function
-    _attach_helper_methods(orchestrator, logger)
-    
-    # Attach conversation root manager or default to orchestrator itself
-    orchestrator.root_manager = conversation_root_manager or orchestrator
-    
+    # Initialize model wrapper
+    model_wrapper = LiteLLMModel(model_name=model, sampler_config=sampler_config)
+
+    # Create orchestrator instance
+    orchestrator = JikiOrchestrator(
+        model=model_wrapper,
+        mcp_client=mcp_client,
+        tools_config=actual_tools_config,
+        logger=logger,
+        prompt_builder=prompt_builder,
+        conversation_root_manager=conversation_root_manager
+    )
+
+    # Attach helper methods like run_ui, export_traces
+    _attach_helper_methods(orchestrator, logger) 
+
     return orchestrator

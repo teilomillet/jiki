@@ -9,13 +9,13 @@ This script demonstrates:
 """
 
 import asyncio
-from jiki import create_jiki
+from jiki import Jiki
 
 
 def example_sse_resources():
     # Create orchestrator (try auto-discovery; fallback to manual tools.json)
     try:
-        orchestrator = create_jiki(
+        orchestrator = Jiki(
             auto_discover_tools=True,
             mcp_mode="sse",
             mcp_script_path="http://localhost:8000/mcp",
@@ -23,7 +23,7 @@ def example_sse_resources():
         )
     except Exception as e:
         print(f"[WARN] SSE discovery failed, falling back to stdio and tools.json: {e}")
-        orchestrator = create_jiki(
+        orchestrator = Jiki(
             tools="tools.json",
             mcp_mode="stdio",
             mcp_script_path="servers/calculator_server.py",

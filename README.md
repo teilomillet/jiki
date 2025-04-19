@@ -31,13 +31,14 @@ export ANTHROPIC_API_KEY=<your_api_key>
 
 Create and run an orchestrator programmatically:
 ```python
-from jiki import create_jiki
+# Using the new factory function
+from jiki import Jiki 
 
 # Create a pre-configured orchestrator using auto-discovery
 # This assumes a compatible FastMCP server (like servers/calculator_server.py)
 # is running or accessible via the specified mcp_script_path.
 # It also uses default model and tracing settings.
-orchestrator = create_jiki(
+orchestrator = Jiki(
     auto_discover_tools=True,
     mcp_mode="stdio",
     mcp_script_path="servers/calculator_server.py"
@@ -92,12 +93,12 @@ python -m jiki.cli process --help
 
 Jiki can return a rich `DetailedResponse` object that includes the assistant's
 answer **and** all tool calls / raw traces generated during the turn. Tracing 
-is enabled by default (`trace=True` in `create_jiki`).
+is enabled by default (`trace=True` in `Jiki()`).
 
 ```python
-from jiki import create_jiki
+from jiki import Jiki
 
-orchestrator = create_jiki(auto_discover_tools=True, mcp_script_path="servers/calculator_server.py")
+orchestrator = Jiki(auto_discover_tools=True, mcp_script_path="servers/calculator_server.py")
 
 # Get a structured response with trace metadata
 detailed = orchestrator.process_detailed("What is the result of adding 10 and 5?")
@@ -115,57 +116,41 @@ print(detailed.traces)      # Raw trace dictionaries for deeper inspection
 ## Providing Tools Manually
 
 If you don't use `auto_discover_tools=True`, you can provide tool schemas 
-to `create_jiki` via the `tools` argument. This can be a path to a JSON 
+to `Jiki()` via the `tools` argument. This can be a path to a JSON 
 file or a list of dictionaries, where each dictionary follows the FastMCP 
 tool schema format.
 
 Example `tools.json`:
 ```json
 [
-  {
-    "tool_name": "add",
-    "description": "Add two numbers",
-    "arguments": {
-        "a": {"type": "integer", "description": "First number", "required": True},
-        "b": {"type": "integer", "description": "Second number", "required": True}
+    {
+        "tool_name": "calculator",
+        "description": "Performs basic arithmetic operations.",
+        "arguments": {
+            "expression": {
+                "type": "string",
+                "description": "The mathematical expression to evaluate (e.g., '2 + 2')"
+            }
+        }
     }
-  }
-  // ... other tools
 ]
 ```
 
-Example Python usage:
+Then use it like this:
 ```python
-from jiki import create_jiki
+from jiki import Jiki
 
-orchestrator = create_jiki(
-    tools="path/to/your/tools.json", # Path to config
-    mcp_script_path="path/to/your/corresponding/server.py" # Server implementing the tools
+orchestrator = Jiki(
+    tools="tools.json",
+    mcp_script_path="servers/calculator_server.py",
+    mcp_mode="stdio"
 )
-# Use orchestrator...
 ```
 
-Server implementation (`servers/calculator_server.py`):
-```python
-from fastmcp import FastMCP
+## Contributing
 
-mcp = FastMCP("Calculator")
+Contributions are welcome! Please see the contributing guide (TODO).
 
-@mcp.tool()
-def add(a: int, b: int) -> int:
-    """Add two numbers"""
-    return a + b
+## License
 
-# ... other tool definitions ...
-
-if __name__ == "__main__":
-    mcp.run()
-```
-
-## Requirements
-
-- Python 3.11+
-- litellm >= 1.35.0 (or the latest)
-- fastmcp >= 2.1.1
-- mcp
-- tiktoken (optional – enables exact token counting)
+Jiki is licensed under the Apache 2.0 License.

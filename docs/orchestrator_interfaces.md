@@ -3,29 +3,31 @@
 Just a few lines of code and you're up and running:
 
 ```python
-from jiki import create_jiki
+# Import the main factory function
+from jiki import Jiki
 
 # 1. Create the orchestrator with default settings
-jiki = create_jiki()
+# This implicitly uses the default calculator server if available
+jiki_instance = Jiki()
 
 # 2. Ask a simple question synchronously
-answer = jiki.process("What is 2 + 3?")
+answer = jiki_instance.process("What is 2 + 3?")
 print(answer)  # → 5
 
 # 3. Or request a detailed response with tool call trace
-detailed = jiki.process_detailed("Multiply 7 by 6")
+detailed = jiki_instance.process_detailed("Multiply 7 by 6")
 print(detailed.result)             # → 42
 for call in detailed.tool_calls:
-    print(f"Tool: {call.tool}, Args: {call.arguments}, Result: {call.result}")
+    print(f"Tool: {call.tool_name}, Args: {call.arguments}, Result: {call.result}")
 ```
 
-> **Tip:** You can also run `jiki process "Your question"` from the CLI or build your own interface using `jiki.run_ui()`.
+> **Tip:** You can also run `python -m jiki.cli process "Your question"` from the CLI or build your own interface using `jiki_instance.run_ui()`.
 
 ---
 
 ## Under the Hood: Core Interfaces
 
-Behind this simple API, `JikiOrchestrator` depends only on minimal abstractions:
+Behind this simple API, `JikiOrchestrator` (which `Jiki()` creates and configures) depends only on minimal abstractions:
 
 - **Prompt Builder** (`IPromptBuilder`)
 - **MCP Client** (`IMCPClient`)

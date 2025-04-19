@@ -7,6 +7,8 @@ Jiki is designed around a few simple, pluggable abstractions. You can swap in yo
 Defines how Jiki discovers and calls external tools.
 
 ```python
+from typing import Protocol, List, Dict, Any
+
 class IToolClient(Protocol):
     async def discover_tools(self) -> List[Dict[str, Any]]:
         ...
@@ -17,7 +19,7 @@ class IToolClient(Protocol):
         ...
 ```
 
-*Implemented by* `EnhancedMCPClient` in `jiki/mcp_client.py`.
+*Implemented by* `JikiClient` in `jiki/mcp_client.py` (which inherits from `BaseMCPClient` but provides the full concrete implementation using `fastmcp`).
 
 ---
 
@@ -26,12 +28,14 @@ class IToolClient(Protocol):
 Extends `IToolClient` to include resources and roots management (per MCP spec).
 
 ```python
+from jiki.resources.resource_manager import IResourceManager # Assumes IResourceManager is defined
+
 class IMCPClient(IToolClient, IResourceManager, Protocol):
     async def list_roots(self) -> List[Dict[str, Any]]: ...
     async def send_roots_list_changed(self) -> None: ...
 ```
 
-*Used for* tool discovery/invocation, resource listing/reading, and notifying root changes.
+*Used for* tool discovery/invocation, resource listing/reading, and notifying root changes. The standard implementation satisfying this is `JikiClient`.
 
 ---
 
@@ -40,6 +44,8 @@ class IMCPClient(IToolClient, IResourceManager, Protocol):
 Abstracts prompt construction, so you can customize how tools and resources are exposed.
 
 ```python
+from typing import Optional
+
 class IPromptBuilder(Protocol):
     def create_available_tools_block(
         self, tools_config: List[Dict[str, Any]]
@@ -81,20 +87,24 @@ class ISamplerConfig(Protocol):
 
 ## IResourceManager & IRootManager
 
+These protocols define interactions for managing resources and conversation roots according to the MCP specification.
+
 - **IResourceManager** (in `jiki/resources`)
   - `list_resources()` and `read_resource(uri)` per MCP resources spec.
 
 - **IRootManager** (in `jiki/roots`)
   - `list_roots()` and `send_roots_list_changed()` per MCP roots spec.
 
+- **IConversationRootManager** (in `jiki/roots`)
+  - Extends root management with conversation-specific snapshot/resume capabilities.
 
-With these interfaces, the core orchestrator never hardcodes transport, tool‑call, or prompt details—making it easy to extend or replace any piece without rewriting Jiki itself. 
+With these interfaces, the core `JikiOrchestrator` never hardcodes transport, tool‑call, or prompt details—making it easy to extend or replace any piece without rewriting Jiki itself. 
 
 ---
 
 ## How They Work Together
 
-`JikiOrchestrator` ties everything in a simple pipeline:
+`JikiOrchestrator` (typically created via `Jiki()`) ties everything in a simple pipeline:
 
 1. **Prompt Construction**: `IPromptBuilder` builds the system prompt (tools, resources, user query).
 2. **Token Streaming**: `LiteLLMModel` streams tokens through `generate_and_intercept`, catching `<mcp_tool_call>` blocks.
@@ -113,28 +123,33 @@ All core behaviors are defined via protocols, so you can customize exactly what 
 ### 1. Custom Prompt Builder
 
 ```python
-from jiki.prompts.prompt_builder import DefaultPromptBuilder
-from jiki import JikiOrchestrator
+from jiki.prompts.prompt_builder import DefaultPromptBuilder, IPromptBuilder
+from jiki.orchestrator import JikiOrchestrator
 from jiki.models.litellm import LiteLLMModel
-from jiki.mcp_client import EnhancedMCPClient
+from jiki.mcp_client import JikiClient
 
 class FancyPromptBuilder(DefaultPromptBuilder):
     def build_initial_prompt(self, user_input, tools_config, resources_config=None):
         header = "### 🎩 Welcome to Fancy Jiki!\n"
         return header + super().build_initial_prompt(user_input, tools_config, resources_config)
 
+# Assume model, client, tools are defined
+# model = LiteLLMModel(...)
+# client = JikiClient(...)
+# tools = [...]
+
 orch = JikiOrchestrator(
-    model=LiteLLMModel("gpt-4"),
-    mcp_client=EnhancedMCPClient(transport_type="sse", script_path="http://localhost:8000/mcp"),
-    tools_config=[...],
-    prompt_builder=FancyPromptBuilder()
+    model=model,
+    mcp_client=client,
+    tools_config=tools,
+    prompt_builder=FancyPromptBuilder() # Pass custom builder here
 )
 ```
 
 ### 2. Custom Sampler Configuration
 
 ```python
-from jiki import create_jiki
+from jiki import Jiki # Use the main factory
 from jiki.sampling import ISamplerConfig
 
 class MySampler(ISamplerConfig):
@@ -151,8 +166,9 @@ class MySampler(ISamplerConfig):
             "stop": self.stop
         }
 
-jiki = create_jiki(
-    model="gpt-4",
+# Pass the custom sampler config to Jiki()
+jiki_instance = Jiki(
+    model="gpt-4", # Or your preferred model
     sampler_config=MySampler()
 )
 ```
@@ -161,21 +177,25 @@ jiki = create_jiki(
 
 ```python
 from jiki.tool_client import IToolClient
+from typing import List, Dict, Any
 
 class StubToolClient(IToolClient):
     async def discover_tools(self):
         return [{"tool_name":"echo","description":"Echoes input","arguments":{"text":{"type":"string"}}}]
-    async def execute_tool_call(self, name, args):
-        return args.get('text', '')
+    async def execute_tool_call(self, tool_name, arguments):
+        return arguments.get('text', '')
 
 # Manually instantiate orchestrator with a stub client
-from jiki import JikiOrchestrator
+from jiki.orchestrator import JikiOrchestrator
 from jiki.models.litellm import LiteLLMModel
 
+# Assume model is defined
+# model = LiteLLMModel("gpt-4")
+
 orch = JikiOrchestrator(
-    model=LiteLLMModel("gpt-4"),
-    mcp_client=StubToolClient(),
-    tools_config=[{"tool_name":"echo","description":"","arguments":{"text":{"type":"string"}}}]
+    model=model,
+    mcp_client=StubToolClient(), # Use the stub client
+    tools_config=[{"tool_name":"echo","description":"","arguments":{"text":{"type":"string"}}}] # Define tools manually
 )
 ```
 
@@ -183,16 +203,26 @@ orch = JikiOrchestrator(
 
 ```python
 from jiki.roots.conversation_root_manager import IConversationRootManager
+from typing import Any
 
 class DBRootManager(IConversationRootManager):
-    def snapshot(self): ...  # save to your DB
-    def resume(self, snapshot): ...  # load from your DB
+    # Implement methods to load/save conversation state to a DB
+    def snapshot(self) -> Any: 
+        print("[DBRootManager] Snapshotting conversation state...")
+        # Replace with actual DB save logic
+        return {"dummy_state": "example"}
 
-from jiki import create_jiki
-jiki = create_jiki(
+    def resume(self, snapshot: Any) -> None:
+        print(f"[DBRootManager] Resuming conversation state from: {snapshot}")
+        # Replace with actual DB load logic
+
+# Pass the custom manager to Jiki()
+from jiki import Jiki
+
+jiki_instance = Jiki(
     conversation_root_manager=DBRootManager()
 )
 ```
 
 > **Real Value Add:**
-> This protocol‑driven design means you can swap in new behaviors—prompt formatting, model sampling, tool transport, persistence—without touching Jiki's core. You stay focused on your unique logic instead of plumbing. 
+This protocol‑driven design means you can swap in new behaviors—prompt formatting, model sampling, tool transport, persistence—without touching Jiki's core. You stay focused on your unique logic instead of plumbing. 
