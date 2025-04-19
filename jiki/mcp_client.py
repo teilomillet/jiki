@@ -4,6 +4,7 @@ import traceback
 import json
 from pathlib import Path
 from typing import Any, List, Dict, Optional, Union, Callable
+import inspect
 
 # Use specific ClientError for tool call errors
 from fastmcp import Client
@@ -279,7 +280,77 @@ class JikiClient(IMCPClient):
             print(f"[ERROR] Failed to read resource {uri}: {e}")
             return [] # Return empty list on failure
 
-    # list_roots is removed as it's not directly available in fastmcp.Client API
+    async def list_roots(self) -> List[Dict[str, Any]]:
+        """Return the list of roots configured for this client.
+
+        The MCP specification defines *roots/list* as a **client capability** –
+        therefore FastMCP servers (and the `fastmcp.Client` library) do not expose
+        a dedicated RPC for listing roots.  Instead, the client communicates its
+        available roots to the server during the handshake via the
+        `roots`/`set_roots` capability.
+
+        This helper surfaces that locally‑configured information so that higher‑
+        level application code (examples, orchestrators, etc.) can still query
+        the active root list in a uniform way without having to keep an external
+        reference.
+
+        Returns
+        -------
+        List[Dict[str, Any]]
+            A list of dictionaries with the keys ``uri`` and ``name``.  If the
+            root objects contain additional attributes those are ignored for now
+            to keep the structure simple and implementation‑agnostic.
+        """
+
+        roots: List[Dict[str, Any]] = []
+
+        root_source = self.roots_handler
+
+        # Nothing configured → just return empty list
+        if root_source is None:
+            return roots
+
+        try:
+            # Case 1: Static list (e.g. List[str] or List[mcp.types.Root])
+            if isinstance(root_source, (list, tuple)):
+                iterable = root_source
+
+            # Case 2: Callable (fastmcp RootsHandler) – can be sync or async
+            elif callable(root_source):
+                result = root_source()
+                if inspect.iscoroutine(result):
+                    result = await result  # type: ignore[func-returns-value]
+                iterable = result  # type: ignore[assignment]
+            else:
+                iterable = []
+
+            # Normalise elements into simple dicts
+            for item in iterable:
+                uri = None
+                name = ""
+
+                # Handle mcp.types.Root or similar objects
+                if hasattr(item, "uri"):
+                    uri = getattr(item, "uri")
+                # Primitive string → assume it's the URI directly
+                elif isinstance(item, str):
+                    uri = item
+                # Fallback – best‑effort stringification
+                else:
+                    uri = str(item)
+
+                # Optional name attribute
+                if hasattr(item, "name"):
+                    name = str(getattr(item, "name"))
+
+                roots.append({"uri": str(uri), "name": name})
+
+        except Exception as exc:
+            # Swallow the error but log so that callers are not broken by a bad
+            # roots handler implementation.
+            print(f"[WARN] Failed to resolve roots via JikiClient.list_roots: {exc}")
+
+        return roots
 
     async def send_roots_list_changed(self) -> None:
         """Notify server of roots list change via `client.send_roots_list_changed`."""

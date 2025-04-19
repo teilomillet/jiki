@@ -176,3 +176,4 @@ cython_debug/
 
 # jiki
 interaction_traces/
+*/*.DS_Store
