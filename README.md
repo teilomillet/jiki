@@ -4,7 +4,7 @@
 
 ## Overview
 
-Jiki is a flexible LLM orchestration framework designed for building applications that leverage tool calling via the Multi-Capability Protocol (MCP). It integrates seamlessly with LiteLLM for broad LLM provider support and FastMCP for robust tool server communication.
+Jiki is a flexible LLM orchestration framework designed for building applications that leverage tool calling via the Model Context Protocol (MCP). It integrates seamlessly with LiteLLM for broad LLM provider support and FastMCP for robust tool server communication.
 
 Jiki aims to be easy to start with for simple use cases while providing the depth needed for complex, customized applications.
 
