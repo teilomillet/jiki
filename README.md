@@ -2,92 +2,121 @@
 
 ![Jiki Logo](logo.png)
 
-## Overview
-
-Jiki is a flexible LLM orchestration framework designed for building applications that leverage tool calling via the Model Context Protocol (MCP). It integrates seamlessly with LiteLLM for broad LLM provider support and FastMCP for robust tool server communication.
-
-Jiki aims to be easy to start with for simple use cases while providing the depth needed for complex, customized applications.
+Jiki is a Python framework that connects LLMs to tool servers using the Model Context Protocol (MCP), enabling powerful AI applications with just a few lines of code.
 
 ## Quick Start
 
-Get started quickly with Jiki's interactive CLI or by integrating it into your Python application.
+### Installation
 
-**Installation:** (using [uv](https://github.com/astral-sh/uv) recommended)
 ```bash
-# Using uv
-uv pip install jiki
+# Using pip
+pip install jiki
+
+# Or using uv (recommended)
+uv add jiki
+``
+
+### Set Up API Key
+
+```bash
+# For Anthropic Claude (default), we use LiteLLM so you can use any API key
+export ANTHROPIC_API_KEY=your_key_here
 ```
 
-**Environment Setup:** Export your LLM provider API key (default is Anthropic):
-```bash
-export ANTHROPIC_API_KEY=<your_api_key>
-# Or OPENAI_API_KEY, etc., depending on the model used
-```
+### Run Interactive Chat
 
-**Run Interactive CLI:**
-The simplest way to start is using the built-in CLI with automatic tool discovery (requires a compatible MCP server, like the example `servers/calculator_server.py`).
 ```bash
+# Start interactive chat with auto-discovery and the calculator example
 python -m jiki.cli run --auto-discover --mcp-script-path servers/calculator_server.py
 ```
-Exit with Ctrl-D, Ctrl-C, or `exit`.
 
-**Programmatic Usage (Simple):**
+Try asking: "What is 25 * 16?" or "Can you calculate 128 / 4?"
+
+### Single Query Mode
+
+```bash
+# Process a single query
+python -m jiki.cli process --auto-discover --mcp-script-path servers/calculator_server.py "What is 42 + 17?"
+```
+
+### Simple Python Example
+
 ```python
 from jiki import Jiki
 
-# Create an orchestrator using auto-discovery
-# Assumes servers/calculator_server.py is accessible
+# Create orchestrator with calculator tools
 orchestrator = Jiki(
     auto_discover_tools=True,
-    mcp_mode="stdio",
     mcp_script_path="servers/calculator_server.py"
 )
 
-# Get a simple response
-result = orchestrator.process("What is 2 + 2?")
-print(result) # Output: 4
-
-# Or run the interactive CLI programmatically
-# orchestrator.run_ui()
+# Process a query
+result = orchestrator.process("What is 15 * 8?")
+print(result)  # Output: 120
 ```
 
-## Examples
+## Common Use Cases
 
-Explore the `examples/` directory to see Jiki's capabilities in action:
+| Use Case | Example Command | Python Example |
+|----------|----------------|----------------|
+| **Interactive Chat** | `python -m jiki.cli run --auto-discover --mcp-script-path servers/calculator_server.py` | `orchestrator.run_ui()` |
+| **Single Query** | `python -m jiki.cli process --auto-discover --mcp-script-path servers/calculator_server.py "What is 5 + 10?"` | `orchestrator.process("What is 5 + 10?")` |
+| **Detailed Response** | `python -m jiki.cli process --auto-discover --mcp-script-path servers/calculator_server.py --detailed --show-tools "What is 7 * 8?"` | `detailed = orchestrator.process_detailed("What is 7 * 8?")` |
+| **Custom Tools** | `python -m jiki.cli run --tools tools.json --mcp-script-path servers/calculator_server.py` | `orchestrator = Jiki(tools="tools.json", mcp_script_path="servers/calculator_server.py")` |
+| **Custom LLM** | `python -m jiki.cli run --auto-discover --mcp-script-path servers/calculator_server.py --model openai/gpt-4o` | `orchestrator = Jiki(model="openai/gpt-4o", auto_discover_tools=True, ...)` |
+| **HTTP Transport** | `python -m jiki.cli run --auto-discover --mcp-mode sse --mcp-url http://localhost:8000` | `orchestrator = Jiki(auto_discover_tools=True, mcp_mode="sse", mcp_url="http://localhost:8000")` |
 
--   **`simple_multiturn_cli.py`**: Demonstrates launching the interactive CLI programmatically with just a few lines, relying on automatic tool discovery for immediate use.
--   **`custom_transport_example.py`**: Shows how to connect to a tool server using a different protocol (SSE over HTTP), interact directly with the MCP client to list resources, and execute tool calls (RPC) without involving the LLM.
--   **`detailed_and_roots_example.py`**: Illustrates retrieving a `DetailedResponse` containing the final result *plus* structured tool call data and raw interaction traces using `process_detailed()`. Also shows interaction with MCP "roots".
--   **`advanced_examples.py`**: Highlights several advanced techniques:
-    -   Loading tool definitions manually from a JSON file instead of auto-discovery.
-    *   Customizing LLM generation parameters (like temperature, max tokens) using `SamplerConfig`.
-    *   Implementing persistent conversation state using a `ConversationRootManager` for snapshot and resume functionality across sessions.
+## Troubleshooting
 
-Run these examples (uv recommended):
-```bash
-uv run examples/simple_multiturn_cli.py
-uv run examples/custom_transport_example.py
-uv run examples/detailed_and_roots_example.py
-uv run examples/advanced_examples.py
-```
+| Issue | Solution |
+|-------|----------|
+| **Missing API Key** | Ensure `ANTHROPIC_API_KEY` (or appropriate provider key) is set in your environment |
+| **Tool Discovery Fails** | Check that the server script path is correct and the script is executable |
+| **Transport Error** | For HTTP transport, make sure the server is running and the URL is correct |
+| **ImportError** | Make sure all dependencies are installed: `pip install jiki[all]` |
+| **Calculator Example Missing** | Clone the repo to access example servers: `git clone https://github.com/your-org/jiki.git` |
+
+## Examples in Action
+
+Explore these complete examples (available in the `examples/` directory):
+
+- **Simple CLI**: `python examples/simple_multiturn_cli.py` - Interactive chat with auto-discovery
+- **Custom Transport**: `python examples/custom_transport_example.py` - Connect to HTTP-based tool server
+- **Detailed Responses**: `python examples/detailed_and_roots_example.py` - Get structured tool call data
+- **Advanced Features**: `python examples/advanced_examples.py` - Custom sampling, conversation state
+
+## Next Steps
+
+Start with the use case that best matches your needs:
+
+1. **Simple Tool Integration**
+   - Begin with the calculator example
+   - Create your own tools with FastMCP
+   - See `examples/simple_multiturn_cli.py`
+
+2. **Web Application Integration**
+   - Learn HTTP-based transport
+   - Structure responses for frontend consumption
+   - See `examples/custom_transport_example.py`
+
+3. **Debugging & Analysis**
+   - Use detailed responses to inspect tool calls
+   - Export and analyze traces
+   - See `examples/detailed_and_roots_example.py`
+
+4. **Advanced Customization**
+   - Control LLM parameters with SamplerConfig
+   - Manage conversation state
+   - See `examples/advanced_examples.py`
 
 ## Key Capabilities
 
-Jiki offers a range of features, progressing from simple defaults to fine-grained control:
-
--   **Multiple LLM Backends:** Leverages LiteLLM for compatibility with OpenAI, Anthropic, Gemini, Mistral, Cohere, Azure, Bedrock, and more.
--   **Flexible Tool Integration:**
-    -   `auto_discover_tools=True`: Simple start by automatically fetching tool schemas from an MCP server.
-    *   `tools="path/to/tools.json"` or `tools=[{...}]`: Provide tool schemas manually for explicit control.
--   **Varied MCP Transport:** Connect to tool servers via `stdio` (default, for local scripts) or `sse` (for servers exposing an HTTP endpoint). See `custom_transport_example.py`.
--   **Detailed Interaction Data:**
-    -   `orchestrator.process()`: Returns the final string result.
-    *   `orchestrator.process_detailed()`: Returns a `DetailedResponse` object containing `.result`, `.tool_calls` (structured list), and `.traces` (raw logs). Essential for debugging and complex logic. See `detailed_and_roots_example.py`.
--   **Tracing & Logging:** Built-in tracing (`trace=True`) captures interactions, exportable via `orchestrator.export_traces()` or automatically by `run_ui()` and the main CLI.
--   **LLM Sampling Configuration:** Pass a `SamplerConfig` object during `Jiki` initialization to control temperature, top_p, max_tokens, etc. See `advanced_examples.py`.
--   **State Management:** Implement the `IConversationRootManager` interface to manage conversation state, enabling snapshot and resume capabilities. See `advanced_examples.py`.
--   **Direct MCP Client Access:** Use `orchestrator.mcp_client` for lower-level interactions with the tool server (listing resources, direct RPC calls). See `custom_transport_example.py`.
--   **Command-Line Interface:** `python -m jiki.cli` provides commands for `run` (interactive), `process` (single query), and `trace` management. Use `--help` for details.
+- **Multiple LLM Backends**: Compatible with OpenAI, Anthropic, Gemini, Mistral, and more via LiteLLM
+- **Flexible Tool Integration**: Auto-discovery or manual tool definition
+- **Transport Options**: Connect to tools via stdio or HTTP (SSE)
+- **Detailed Responses**: Get tool call data and execution traces
+- **State Management**: Save and resume conversations
+- **Full CLI**: Interactive mode, single queries, and trace export
 
 ## Contributing
 

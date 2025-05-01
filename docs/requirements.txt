@@ -2,3 +2,4 @@ mkdocs>=1.6
 mkdocs-material>=9.5          # nice theme
 mkdocstrings[python]>=0.25    # auto‑API pages
 mkdocs-autorefs>=1.0          # cross‑links between pages 
+pymdown-extensions>=10.7      # for mermaid diagrams 

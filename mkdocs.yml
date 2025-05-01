@@ -1,6 +1,14 @@
 site_name: Jiki
 theme:
   name: material
+  features:
+    - content.code.copy
+markdown_extensions:
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
 plugins:
   - search
   - mkdocstrings:            # ← walks your package & renders docs
@@ -10,6 +18,10 @@ plugins:
             merge_init_into_package: true
 nav:
   - Home: index.md
+  - Getting Started:
+      - Overview: getting_started.md
+      - CLI Reference: cli_reference.md
+      - Code Examples: code_examples.md
   - Concepts:
       - Architecture: https://modelcontextprotocol.io/docs/concepts/architecture
       - Tools: https://gofastmcp.com/servers/tools
@@ -17,5 +29,12 @@ nav:
       - Prompts: https://gofastmcp.com/servers/prompts
       - Context: https://gofastmcp.com/servers/context
       - Transports: https://modelcontextprotocol.io/docs/concepts/transports
+  - Implementation:
+      - Architecture Overview: architecture_overview.md
+      - Architecture Diagrams: diagrams/architecture_overview.md
+      - Core Interfaces: core_interfaces.md
+      - Orchestrator Interfaces: orchestrator_interfaces.md
+      - MCP Client: mcp_client.md
+      - Logging: logging.md
   - Reference:
       - API: reference.md    # will be filled by mkdocstrings 

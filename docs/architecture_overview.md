@@ -2,6 +2,15 @@
 
 This document provides a high-level overview of Jiki's internal architecture, focusing on the flow of information during a typical interaction.
 
+## Visual Architecture
+
+For visual representations of Jiki's architecture, please refer to the following diagrams:
+
+- [Architecture Overview Diagram](diagrams/architecture_overview.md#architecture-overview) - High-level component relationships
+- [Tool Call Sequence Diagram](diagrams/architecture_overview.md#tool-call-sequence) - Step-by-step flow of a tool-augmented interaction
+- [Component Relationships Diagram](diagrams/architecture_overview.md#component-relationships) - Detailed class relationships and interfaces
+- [Data Flow Diagram](diagrams/architecture_overview.md#data-flow-diagram) - How data moves through the system
+
 ## Core Components
 
 1.  **`Jiki()` Factory (in `jiki/__init__.py`)**: The primary user entry point. Creates and configures the `JikiOrchestrator`, `TraceLogger`, `JikiClient`, and `LiteLLMModel` with sensible defaults.
@@ -14,6 +23,8 @@ This document provides a high-level overview of Jiki's internal architecture, fo
     *   **`DefaultPromptBuilder`**: Standard implementation.
 6.  **`TraceLogger` (in `jiki/logging.py`)**: Handles logging of interaction events and complete traces.
 7.  **Utilities (in `jiki/utils/`)**: Helper functions for parsing, validation, context management, etc.
+
+See the [Component Relationships Diagram](diagrams/architecture_overview.md#component-relationships) for a visual representation of how these components interact.
 
 ## Interaction Flow (Single Turn)
 
@@ -49,12 +60,16 @@ Let's trace a user query like "What is 5 * 7?" assuming the calculator tool is a
     - Server-side log entries captured under `mcp_traces`
   All of these combined into a single trace dictionary for export.
 
+The complete sequence is illustrated in the [Tool Call Sequence Diagram](diagrams/architecture_overview.md#tool-call-sequence).
+
 ## Key Design Principles
 
 - **Protocol-Driven**: Core components interact via defined interfaces (`IMCPClient`, `IPromptBuilder`), allowing easy extension or replacement.
 - **Abstraction**: High-level functions like `Jiki()` and `JikiOrchestrator.process()` hide the complexity of MCP communication, prompt engineering, and tool call handling.
 - **Composability**: Components like loggers, clients, and prompt builders can be mixed and matched (especially when constructing `JikiOrchestrator` manually).
 - **Leverage Existing Standards**: Uses MCP for tool interaction and LiteLLM for broad model support.
+
+The [Data Flow Diagram](diagrams/architecture_overview.md#data-flow-diagram) illustrates how these principles work together in practice.
 
 # Architecture Overview
 
@@ -83,6 +98,8 @@ This document fulfills Phase 1 (items 1-3) of our refactor plan by providing:
 | CLI frontends              | `jiki/cli.py`, `tools.json`         | Command-line entrypoints and argument parsing       | `argparse`, `os`, `json`              |
 | Utilities                  | `jiki/utils/`                       | Context trimming, parsing, streaming, token counting| Various; see individual modules       |
 | Models                     | `jiki/models/`                      | LLM model wrappers and response types               | Pydantic, LiteLLM                     |
+
+The [Architecture Overview Diagram](diagrams/architecture_overview.md#architecture-overview) provides a visual representation of these components.
 
 ---
 
