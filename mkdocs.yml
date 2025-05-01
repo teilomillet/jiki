@@ -24,6 +24,8 @@ plugins:
             docstring_section_style: table
             show_category_heading: false
             show_symbol_type_heading: false
+            separate_signature: true
+            line_length: 88
 nav:
   - Home: index.md
   - Getting Started:

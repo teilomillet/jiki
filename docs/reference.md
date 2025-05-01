@@ -20,6 +20,7 @@ The factory function is the primary entry point for most users. It simplifies cr
 
 The `Jiki()` function follows the factory pattern, creating and configuring all necessary components behind the scenes:
 
+
 1. **Initialization Flow**:
    - Sets up a `TraceLogger` if tracing is enabled
    - Configures the appropriate MCP transport (stdio or SSE)
@@ -27,6 +28,7 @@ The `Jiki()` function follows the factory pattern, creating and configuring all 
    - Discovers or loads tool configurations
    - Initializes a language model wrapper (via LiteLLM)
    - Creates and returns a fully configured `JikiOrchestrator`
+
 
 2. **Key Parameters**:
    - `model`: LLM identifier (e.g., "anthropic/claude-3-sonnet-20240229")
@@ -40,6 +42,7 @@ The `Jiki()` function follows the factory pattern, creating and configuring all 
    - `conversation_root_manager`: Custom state manager
    - `prompt_builder`: Custom prompt builder
    - `sampler_config`: Custom sampling parameters
+
 
 3. **Usage Examples**:
 
@@ -83,6 +86,7 @@ The orchestrator is the central component that coordinates LLM interactions, too
 
 The `JikiOrchestrator` serves as the central coordination engine, managing the complete lifecycle of a tool-augmented conversation:
 
+
 1. **Component Management**:
    - Wraps a language model (via the `model` parameter)
    - Maintains a reference to the MCP client
@@ -90,18 +94,21 @@ The `JikiOrchestrator` serves as the central coordination engine, managing the c
    - Controls prompt generation through a `PromptBuilder`
    - Handles logging and tracing via a `TraceLogger`
 
+
 2. **Conversation Flow**:
    - Constructs initial system prompts with tool/resource information
    - Processes user inputs within an ongoing conversation
    - Streams tokens from the LLM, watching for tool call blocks
    - Intercepts tool calls, validates them, and executes via the MCP client
-   - Injects tool results back into the context
+   - Injects results back into the context
    - Manages token budgets through context trimming
+
 
 3. **State Management**:
    - Maintains conversation history in LiteLLM/OpenAI format
    - Supports conversation snapshotting and resuming
    - Tracks tool calls and traces for the current conversation turn
+
 
 4. **Key Methods**:
    - `process()`: Handle a single query and return a string result
@@ -109,6 +116,7 @@ The `JikiOrchestrator` serves as the central coordination engine, managing the c
    - `process_user_input()`: Async underlying implementation
    - `create_available_tools_block()`: Format tool schemas for prompts
    - `snapshot()` / `resume()`: Save/restore conversation state
+
 
 5. **Usage Example**:
 
@@ -153,16 +161,19 @@ The `DetailedResponse` and `ToolCall` classes enable programmatic access to inte
    - `tool_calls`: List of tool calls made during processing
    - `traces`: Raw interaction traces if tracing was enabled
 
+
 2. **ToolCall Structure**:
    - `tool_name`: Name of the called tool
    - `arguments`: Dictionary of arguments passed to the tool
    - `result`: The response returned by the tool
+
 
 3. **Common Use Cases**:
    - Analyzing which tools were used for debugging
    - Extracting structured data from tool results
    - Building UIs that visualize tool execution
    - Creating test cases for tool integration
+
 
 4. **Usage Example**:
 
@@ -208,27 +219,33 @@ The `JikiClient` serves as the bridge between Jiki and MCP-compatible tool serve
    - Supports multiple transport types (stdio, SSE, WebSocket)
    - Handles connection lifecycle within async contexts
 
+
 2. **Tool Operations**:
    - `discover_tools()`: Lists available tools from the server
    - `execute_tool_call()`: Invokes tools with arguments
    - Processes and formats tool results for the orchestrator
 
+
 3. **Resource Operations**:
    - `list_resources()`: Retrieves available resources
    - `read_resource()`: Fetches specific resource content
 
+
 4. **Roots Management**:
    - `list_roots()`: Gets current root URIs for conversation state
    - `send_roots_list_changed()`: Notifies server of state changes
+
 
 5. **Tracing**:
    - Captures all MCP interactions for debugging
    - Records server-side logging notifications
    - Provides access to traces via `get_interaction_traces()`
 
+
 6. **Legacy Support**:
    - Maintains backwards compatibility through `EnhancedMCPClient`
    - Handles graceful deprecation warnings
+
 
 7. **Usage Example**:
 
@@ -270,19 +287,23 @@ These interfaces define the contract that MCP client implementations must fulfil
 
 The client interfaces establish a clear contract for tool integration:
 
+
 1. **Interface Hierarchy**:
    - `IToolClient`: Base interface for basic tool operations
    - `IMCPClient`: Extended interface adding MCP-specific capabilities
+
 
 2. **Extension Points**:
    - Create custom clients for specialized integrations
    - Implement mock clients for testing
    - Build adapters for non-MCP tool systems
 
+
 3. **Implementation Requirements**:
    - Tool clients must implement tool discovery and execution
    - MCP clients add resource and roots management
    - All operations are async for non-blocking performance
+
 
 4. **Usage Example**:
 

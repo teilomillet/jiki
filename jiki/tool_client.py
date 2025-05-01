@@ -7,9 +7,10 @@ class IToolClient(Protocol):
     Protocol defining the standard interface for discovering and executing tools via MCP.
 
     This interface abstracts the core functionalities required by the Jiki orchestrator
-    to interact with an external tool server:
-    1. Discovering what tools are available and their schemas.
-    2. Executing a specific tool with given arguments.
+    to interact with an external tool server. These core functionalities are:
+    
+    - **Discovering tools**: Identifying available tools and their schemas.
+    - **Executing tools**: Invoking a specific tool with given arguments.
 
     By depending on `IToolClient`, the orchestrator can work with any implementation
     that fulfills this contract, decoupling it from specific client implementations
