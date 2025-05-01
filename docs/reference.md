@@ -255,12 +255,20 @@ traces = client.get_interaction_traces()
       show_root_heading: true
       show_source: false
       heading_level: 3
+      show_if_no_docstring: true
+      show_bases: true
+      members_order: source
+      show_symbol_type_heading: true
 
 ::: jiki.tool_client.IToolClient
     options:
       show_root_heading: true
       show_source: false
       heading_level: 3
+      show_if_no_docstring: true
+      show_bases: true
+      members_order: source
+      show_symbol_type_heading: true
 
 These interfaces define the contract that MCP client implementations must fulfill. They're useful if you want to create custom clients for special scenarios.
 
@@ -319,6 +327,11 @@ These components allow customizing Jiki's behavior for advanced use cases.
       show_root_heading: true
       show_source: false
       heading_level: 3
+      show_if_no_docstring: true
+      show_bases: true
+      members_order: source
+      show_signature_annotations: true
+      show_symbol_type_heading: true
 
 SamplerConfig controls how the LLM generates responses by adjusting parameters like temperature and top_p.
 
@@ -329,6 +342,10 @@ SamplerConfig controls how the LLM generates responses by adjusting parameters l
       show_root_heading: true
       show_source: false
       heading_level: 3
+      show_if_no_docstring: true
+      show_bases: true
+      members_order: source
+      show_symbol_type_heading: true
 
 ::: jiki.prompts.prompt_builder.DefaultPromptBuilder
     options:
@@ -388,6 +405,10 @@ orchestrator = Jiki(
       show_root_heading: true
       show_source: false
       heading_level: 3
+      show_if_no_docstring: true
+      show_bases: true
+      members_order: source
+      show_symbol_type_heading: true
 
 Conversation root managers enable saving and resuming conversation state, which is useful for persistent interactions across sessions.
 
@@ -418,6 +439,10 @@ Tools are defined using schemas that specify their name, description, parameters
       show_root_heading: true
       show_source: false
       heading_level: 3
+      show_if_no_docstring: true
+      show_bases: true
+      members_order: source
+      show_symbol_type_heading: true
 
 Resources represent data assets that can be accessed by the LLM during interaction, such as documentation, templates, or external information.
 
