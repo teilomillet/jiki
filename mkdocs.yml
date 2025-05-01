@@ -16,18 +16,14 @@ plugins:
         python:
           options:
             merge_init_into_package: true
-            show_if_no_docstring: true
-            show_signature_annotations: true
             show_source: false
             show_bases: true
             heading_level: 3
-            members_order: source
+            show_if_no_docstring: false
             docstring_style: google
-            docstring_section_style: spacy
-            filters: ["!^_[^_]"]
-            show_category_heading: true
-            show_symbol_type_heading: true
-            show_symbol_type_toc: true
+            docstring_section_style: table
+            show_category_heading: false
+            show_symbol_type_heading: false
 nav:
   - Home: index.md
   - Getting Started:
