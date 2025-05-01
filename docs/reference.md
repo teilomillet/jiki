@@ -58,11 +58,13 @@ orchestrator = Jiki(
 
 The `JikiOrchestrator` is the central component responsible for coordinating the entire interaction lifecycle within Jiki. It manages communication between the language model (LLM), the tool execution layer (MCP client), and the conversation state.
 
-Key responsibilities include component management, orchestrating the conversation flow, and handling state persistence. The orchestrator wraps the selected language model and holds references to the MCP client for tool operations, a `PromptBuilder` for formatting LLM inputs, and a `TraceLogger` for debugging. It manages the tool configurations and their corresponding schemas.
+Key responsibilities include component management, orchestrating the conversation flow, and handling state persistence. The orchestrator wraps the selected language model (`model`) and holds references to the MCP client (`mcp_client`) for tool operations, a `PromptBuilder` for formatting LLM inputs, and an optional `TraceLogger` for debugging. It manages the tool configurations (`tools_config`) and builds an internal map (`_tools_map`) for efficient validation.
 
-During a conversation, the orchestrator constructs the initial system prompt containing relevant tool and resource information. It processes user inputs, streams responses from the LLM, and actively monitors the output for tool call requests. When a tool call is detected, the orchestrator intercepts it, validates the request against the tool's schema, and executes it using the MCP client. The results from the tool call are then formatted and injected back into the conversation history, which is maintained in a format compatible with LiteLLM/OpenAI APIs. To manage context window limitations, the orchestrator also handles context trimming.
+Internally, the orchestrator maintains the conversation history as a list of messages (`_messages`). When processing user input (`process_user_input`), it distinguishes between the first turn (where it may fetch resources via `mcp_client.list_resources()` and builds an initial system prompt using the `prompt_builder`) and subsequent turns (where it simply appends the user message). Before sending messages to the LLM, it uses the `jiki.utils.context.trim_context` utility to ensure the history fits within the model's context window, relying on `jiki.utils.token.count_tokens` for measurement. The core LLM interaction, including streaming responses and intercepting tool calls, is delegated to the `jiki.utils.streaming.generate_and_intercept` utility function. This function uses callbacks (`_handle_tool_call`) provided by the orchestrator to manage tool execution.
 
-For state persistence, the `JikiOrchestrator` supports snapshotting the current conversation state, allowing it to be resumed later. It also keeps track of tool calls and execution traces within the current interaction turn. Core functionality is exposed through methods like `process()` for simple interactions and `process_detailed()` for retrieving structured results including tool call information.
+The `_handle_tool_call` method is responsible for parsing the LLM's tool call request (using `jiki.utils.parsing.extract_tool_call` and `jiki.utils.tool.parse_tool_call_content`), validating it against the tool schema map (`_tools_map` via `jiki.utils.tool.validate_tool_call`), executing the validated call via the `mcp_client.execute_tool_call`, and formatting the result (as `<mcp_tool_result>...`) to be injected back into the conversation history. It also records successful calls in `_last_tool_calls`.
+
+For state persistence, the `JikiOrchestrator` itself implements `snapshot()` and `resume()` methods, allowing the current conversation state (primarily `_messages` and `_last_tool_calls`) to be saved and restored externally. It also accepts an optional `conversation_root_manager` during initialization for custom state handling (see Roots and Conversation State Management section). Core functionality is exposed through methods like `process()` for simple interactions and `process_detailed()` for retrieving structured results including tool call information.
 
 ##### Usage Example
 
@@ -169,32 +171,109 @@ traces = client.get_interaction_traces()
       show_source: false
       heading_level: 3
 
+### MCP Client Transports
+
+The connection between the `JikiClient` and the MCP server is managed by a **Transport** layer. This layer handles the specifics of how communication occurs, whether it's launching a local script or connecting to a network service. Jiki leverages the transport system provided by the underlying `fastmcp` library.
+
+While `fastmcp` supports various transport types [https://gofastmcp.com/clients/transports], the `Jiki()` factory function provides convenient configuration for the most common ones used with Jiki:
+
+*   **Stdio (`PythonStdioTransport`)**:
+    *   **Use Case:** Running a Python-based MCP server as a local subprocess. Communication happens via the subprocess's standard input and standard output.
+    *   **Configuration:** Specify the path to the server script using the `mcp_script_path` argument in `Jiki()`. This is the default if `mcp_mode` is not set or set to `'stdio'`.
+    *   **Details:** Jiki uses `fastmcp.client.transports.PythonStdioTransport` for this, as seen in `jiki.transports.factory.py`. Ideal for development or simple self-contained tools.
+
+*   **SSE (`SSETransport`)**:
+    *   **Use Case:** Connecting to a persistent MCP server running over a network via HTTP/S using Server-Sent Events.
+    *   **Configuration:** Set `mcp_mode="sse"` and provide the server's URL via the `mcp_url` argument in `Jiki()` (defaults to `http://localhost:6277/mcp` if not provided, according to `jiki.transports.factory.py`).
+    *   **Details:** Uses `fastmcp.client.transports.SSETransport`. Suitable for connecting to deployed MCP services. See [https://gofastmcp.com/clients/transports#sse-server-sent-events](https://gofastmcp.com/clients/transports#sse-server-sent-events) for more on SSE transport.
+
+**Other FastMCP Transports:**
+
+The underlying `fastmcp.Client` used by `JikiClient` can also potentially work with other transports like WebSockets (`WSTransport`) or connect directly to in-process servers (`FastMCPTransport`) for testing, though these might require more direct configuration of the `JikiClient` rather than using the main `Jiki()` factory function's simpler parameters. Refer to the FastMCP documentation [https://gofastmcp.com/clients/transports] for the full list and capabilities.
+
 ### Client Interfaces
 
 #### Purpose and Structure
 
-The client interfaces, `IToolClient` and `IMCPClient`, define the essential contracts for how the Jiki orchestrator interacts with tool execution backends. `IToolClient` represents the base interface, requiring methods for fundamental tool operations like discovery and execution. `IMCPClient` extends this base contract, adding methods specific to the Model Context Protocol (MCP), such as resource listing/reading and roots management for conversation state.
+The client interfaces, `IToolClient` and `IMCPClient` (defined in `jiki.tool_client`), establish the essential contracts for how the Jiki orchestrator interacts with tool execution backends.
 
-These interfaces serve as crucial extension points, allowing developers to create custom client implementations for specialized scenarios. This could include building mock clients for testing purposes, creating adapters for integrating with non-MCP tool systems, or developing clients with unique transport or communication logic. All interface methods are defined as asynchronous to ensure non-blocking performance during operations like tool discovery and execution.
+*   `IToolClient`: Represents the base interface, requiring methods for fundamental tool operations like discovery (`discover_tools`) and execution (`execute_tool_call`).
+*   `IMCPClient`: Extends `IToolClient`, adding methods specific to the full Model Context Protocol (MCP), including resource listing/reading (via `IResourceManager` inheritance) and roots management (`list_roots`, `send_roots_list_changed`). This is the interface expected by the `JikiOrchestrator`.
 
-##### Usage Example:
+**Standard Usage vs. Custom Implementations:**
+
+For most use cases involving standard MCP servers, the built-in `jiki.mcp_client.JikiClient` is the recommended implementation. It leverages the robust `fastmcp.Client` library [https://gofastmcp.com/clients/client] and handles various transports (Stdio, SSE, WebSockets) and the MCP protocol details automatically. Customization for standard clients typically involves configuring the `transport_source` and `roots` when initializing `JikiClient` (often done indirectly via `Jiki()` factory parameters).
+
+**Why Build a Custom Client?**
+
+Implementing `IMCPClient` (or `IToolClient` for basic needs) yourself is an **advanced** task, typically only necessary in specific situations where `JikiClient` is unsuitable, such as:
+
+*   **Integrating Non-MCP Systems:** Connecting Jiki to a backend that uses a completely different communication protocol (e.g., a custom REST API, gRPC service) and cannot be exposed via an MCP server.
+*   **Specialized Communication Logic:** Requiring highly custom logic for connection management, authentication, error handling, retries, or caching that goes beyond the capabilities or configuration options of `fastmcp.Client`.
+*   **Mocking for Testing:** Creating mock or stub clients for unit or integration testing the orchestrator without needing a live backend.
+*   **Performance-Critical Scenarios:** In rare cases where the overhead of `fastmcp.Client` might be prohibitive, requiring a bare-metal implementation (though `fastmcp` itself is designed to be efficient).
+
+**How to Build a Custom Client (Conceptual Steps):**
+
+1.  **Define a Class:** Create a Python class that explicitly inherits from `jiki.tool_client.IMCPClient` (or `IToolClient`).
+2.  **Implement Methods:** Implement *all* the `async` methods defined by the chosen interface(s). This involves writing the code to handle the underlying communication (e.g., making HTTP requests, calling library functions, interacting with a mock state).
+3.  **Handle State:** Manage any necessary connection state, authentication tokens, etc., within your class instance.
+4.  **Return Correct Types:** Ensure each method returns data in the format expected by the interface definition (e.g., `discover_tools` returns a list of dictionaries representing tool schemas).
+5.  **Integrate:** Pass an instance of your custom client class to the `JikiOrchestrator` during its initialization.
+
+##### Example Skeleton (Conceptual)
 
 ```python
-# Implementing a custom client
-class MyCustomClient(IMCPClient):
-    async def initialize(self) -> None:
-        # Custom initialization logic
-        ...
+from jiki.tool_client import IMCPClient
+from typing import List, Dict, Any
+
+# Implementing a custom client (Conceptual - requires actual logic)
+class MyNonMCPClient(IMCPClient):
+    def __init__(self, api_endpoint: str):
+        self.endpoint = api_endpoint
+        # Add necessary state like authentication tokens, session objects etc.
 
     async def discover_tools(self) -> List[Dict[str, Any]]:
-        # Custom tool discovery implementation
-        ...
+        # Logic to fetch tool definitions from the custom backend (e.g., via REST)
+        # and translate them into the expected MCP-like schema format.
+        print(f"Custom client discovering tools from {self.endpoint}...")
+        # ... implementation ...
+        return [{"tool_name": "custom_action", "description": "Performs a custom action", "arguments": {}, "required": []}]
 
     async def execute_tool_call(self, tool_name: str, arguments: dict) -> str:
-        # Custom tool execution implementation
-        ...
+        # Logic to call the specific tool/action on the custom backend
+        # (e.g., make a POST request) and return the result as a string.
+        print(f"Custom client executing '{tool_name}' on {self.endpoint}...")
+        # ... implementation ...
+        return f"Result from custom action '{tool_name}'"
 
-    # Implement other required methods...
+    async def list_resources(self) -> List[Dict[str, Any]]:
+        # Logic for listing resources, if applicable to the custom backend.
+        print(f"Custom client listing resources from {self.endpoint}...")
+        # ... implementation ...
+        return [] # Or return actual resources if backend supports them
+
+    async def read_resource(self, uri: str) -> List[Dict[str, Any]]:
+        # Logic for reading a resource, if applicable.
+        print(f"Custom client reading resource '{uri}' from {self.endpoint}...")
+        # ... implementation ...
+        return [] # Or return actual content
+
+    async def list_roots(self) -> List[Dict[str, Any]]:
+        # If the custom backend has a concept similar to roots, implement here.
+        print(f"Custom client listing roots...")
+        # ... implementation ...
+        return []
+
+    async def send_roots_list_changed(self) -> None:
+        # If the custom backend needs notifications about context changes, implement here.
+        print(f"Custom client handling roots changed...")
+        # ... implementation ...
+        pass
+
+# Usage:
+# custom_client = MyNonMCPClient("http://my-custom-api.com")
+# orchestrator = JikiOrchestrator(client=custom_client, ...) # Assuming direct Orchestrator init
 ```
 
 ::: jiki.tool_client.IMCPClient
@@ -217,26 +296,60 @@ These components allow customizing Jiki's behavior for advanced use cases.
 
 ### Sampling Configuration
 
+Sampling parameters allow fine-grained control over how the underlying Language Model (LLM) generates text during interactions. They influence the creativity, determinism, length, and stopping conditions of the responses.
+
+**Note:** This `SamplerConfig` controls the parameters for Language Model calls made *directly by the Jiki orchestrator* when processing user input and generating responses. It does not configure how Jiki might handle the separate Model Context Protocol feature where an *MCP server* requests an LLM completion from the client (via `sampling/createMessage`, see [https://modelcontextprotocol.io/docs/concepts/sampling](https://modelcontextprotocol.io/docs/concepts/sampling)).
+
+Jiki provides the `jiki.sampling.SamplerConfig` dataclass to specify these settings:
+
+*   `temperature` (float, default 1.0): Controls randomness. Lower values (e.g., 0.1) make the output more focused and deterministic, while higher values increase diversity and creativity.
+*   `top_p` (float, default 1.0): Nucleus sampling. Restricts generation to tokens comprising the top 'p' probability mass. Lower values (e.g., 0.8) further restrict the LLM's choices, often leading to more factual or less surprising text.
+*   `max_tokens` (Optional[int], default None): Sets a hard limit on the maximum number of tokens to be generated in a single response.
+*   `stop` (Optional[List[str]], default None): A list of text sequences. If the LLM generates any of these sequences, generation stops immediately.
+
+To apply custom sampling settings, you instantiate `SamplerConfig` with your desired values and pass this instance to the main `Jiki()` factory function using the `sampler_config` argument. The orchestrator will then use these parameters when invoking the LLM.
+
+#### Usage Example
+
+```python
+from jiki import Jiki, SamplerConfig
+
+# Define custom sampling settings (e.g., low temperature for less randomness)
+custom_sampler = SamplerConfig(temperature=0.2, max_tokens=100)
+
+# Pass the config to the Jiki factory
+orchestrator = Jiki(
+    sampler_config=custom_sampler,
+    # Other necessary parameters like mcp_script_path or tools...
+    auto_discover_tools=True,
+    mcp_script_path="servers/calculator_server.py"
+)
+
+# Subsequent calls will use the specified sampling parameters
+result = orchestrator.process("Explain the concept of temperature in LLMs briefly.")
+print(result)
+```
+
 ::: jiki.sampling.SamplerConfig
     options:
-      show_root_heading: true
+      show_root_heading: false # Focus on explanation above
       show_source: false
-      heading_level: 3
+      heading_level: 4 # Subordinate to Sampling Configuration
 
 ::: jiki.sampling.ISamplerConfig
     options:
-      show_root_heading: true
+      show_root_heading: false # Interface details, less prominent
       show_source: false
-      heading_level: 3
+      heading_level: 4
       show_bases: true
-
-SamplerConfig controls how the LLM generates responses by adjusting parameters like temperature and top_p.
 
 ### Prompt Building
 
 #### Prompt Builder Pattern and Customization
 
 Prompt builders are essential components that control how Jiki structures and formats the input sent to the language model (LLM). They are responsible for assembling system instructions, tool schemas, resource information, and conversation history into a coherent prompt.
+
+Note: Jiki's `PromptBuilder` is responsible for assembling the overall context sent to the LLM on the *client-side*. This is distinct from the concept of server-side 'Prompts' defined in the Model Context Protocol (often via `@mcp.prompt` in FastMCP servers, see [https://gofastmcp.com/servers/prompts](https://gofastmcp.com/servers/prompts)), which are reusable message templates that an MCP server can generate upon request from a client. The `PromptBuilder` integrates the results of tool calls and the conversation history, potentially including messages generated by server-side prompts if the client requested them.
 
 The core contract is defined by the `IPromptBuilder` interface, which specifies methods for generating the tool schema block (`create_available_tools_block`), the resource information block (`create_available_resources_block`), and constructing the complete initial system prompt (`build_initial_prompt`).
 
@@ -264,7 +377,63 @@ orchestrator = Jiki(
     prompt_builder=MyPromptBuilder(),
     # other parameters...
 )
-```
+
+# Example demonstrating conditional prompt logic (Conceptual)
+
+class DynamicPromptBuilder(IPromptBuilder):
+    def __init__(self):
+        # Builders might store state if needed, though how it's populated
+        # depends on how the Orchestrator uses the builder instance.
+        self.conversation_mode = "general" 
+
+    def create_available_tools_block(self, tools_config):
+        # Standard tool block generation (implementation omitted)
+        # ...
+        return "<!-- Tools Block -->\n"
+
+    def create_available_resources_block(self, resources_config):
+        # Standard resource block generation (implementation omitted)
+        # ...
+        return "<!-- Resources Block -->\n"
+
+    def build_initial_prompt(self, user_input, tools_config, resources_config=None, history=None):
+        # NOTE: Assumes 'history' (list of messages) is passed or accessible.
+        # This detail is not explicitly confirmed in the current reference.
+        
+        system_message_content = "You are a helpful assistant.\n"
+        
+        # --- Dynamic Logic Example ---
+        # Check user input or history for keywords to change system prompt
+        if "write code" in user_input.lower():
+            system_message_content += "Focus on providing accurate and efficient code solutions.\n"
+            self.conversation_mode = "coding" # Example of changing state
+        elif history and any("customer support" in msg.get("content", "").lower() for msg in history if msg["role"] == "user"):
+             system_message_content += "Adopt a polite and helpful customer support persona.\n"
+             self.conversation_mode = "support"
+        else:
+            self.conversation_mode = "general"
+        # --- End Dynamic Logic ---
+
+        tools_block = self.create_available_tools_block(tools_config)
+        resources_block = self.create_available_resources_block(resources_config)
+
+        # Combine parts into the initial system prompt message dictionary
+        system_prompt = {
+            "role": "system",
+            "content": f"{system_message_content}\n{tools_block}\n{resources_block}"
+        }
+        
+        # The orchestrator would then typically append the history (if any) 
+        # and the latest user_input message after this system prompt.
+        # This method *itself* usually just returns the system prompt part.
+        return system_prompt 
+
+# Usage with orchestrator:
+# dynamic_builder = DynamicPromptBuilder()
+# orchestrator = Jiki(
+#     prompt_builder=dynamic_builder,
+#     # other parameters...
+# )
 
 ::: jiki.prompts.prompt_builder.IPromptBuilder
     options:
@@ -281,15 +450,27 @@ orchestrator = Jiki(
 
 ### Roots and Conversation State Management
 
-The Model Context Protocol (MCP) includes the concept of "Roots", which allows a client application (like Jiki) to inform the MCP server about its current contextual boundaries or accessible resources. This might include accessible file paths, user identifiers, or database schemas relevant to the ongoing interaction. The server can leverage this information to tailor its behavior or the actions of its tools.
+The Model Context Protocol (MCP) includes the concept of "Roots", which allows a client application (like Jiki) to inform the MCP server about its current contextual boundaries or accessible resources. The server can leverage this information to tailor its behavior. (See [MCP Docs on Roots](https://modelcontextprotocol.io/docs/concepts/architecture#roots)).
 
-Managing these roots is particularly important for enabling persistent, stateful conversations, especially across different sessions. Jiki abstracts the handling of this state through the `IConversationRootManager` interface. Implementations of this interface are responsible for determining the relevant roots and other contextual data for a conversation, providing methods to `snapshot` this state into a serializable format, and allowing the conversation context (including roots) to be restored later using `resume`. This mechanism is key to enabling Jiki applications to maintain continuity in long-running or multi-session interactions.
+While MCP Roots relate to informing the *server* about context, Jiki also needs a mechanism to save and restore the *client-side* conversation state (message history, recent tool calls) for persistence across sessions or requests. Jiki abstracts this client-side state management through the `IConversationRootManager` interface.
+
+**Integration:** An implementation of `IConversationRootManager` can be provided to the `JikiOrchestrator` via the optional `conversation_root_manager` argument in its constructor (`__init__`).
+
+**Functionality:**
+*   Implementations of this interface are responsible for defining *what* client-side state needs saving and loading.
+*   The interface requires implementing `snapshot()` to serialize the relevant state into a dictionary and `resume()` to restore the state from such a dictionary.
+
+**Default Behavior:** If no custom `conversation_root_manager` is provided to the orchestrator, the orchestrator instance *itself* acts as the default manager. Its built-in `snapshot()` and `resume()` methods handle saving and loading the internal message list (`_messages`) and the list of tool calls from the last turn (`_last_tool_calls`).
+
+**Usage:** The `snapshot()` and `resume()` methods (whether default or custom) are intended to be called *externally* by the application using the orchestrator instance. For example, a web application might call `snapshot()` after processing a request to save the state to a database and `resume()` at the start of the next request to load it. They are *not* automatically called by the orchestrator during its internal processing loop.
+
+**Distinction from MCP Roots:** While a custom `IConversationRootManager` *could* potentially include data relevant to MCP Roots within its snapshot, the interface's primary role in Jiki's structure is client-side conversation state persistence. Communicating MCP Roots to the server is typically a responsibility of the `IMCPClient` implementation.
 
 ::: jiki.roots.conversation_root_manager.IConversationRootManager
     options:
       show_root_heading: false
       show_source: false
-      heading_level: 4 # Adjusted heading level for better hierarchy
+      heading_level: 4 # Keep heading level as previously adjusted
       show_bases: true
 
 ## Tools and Resources
@@ -349,25 +530,37 @@ For simpler, less structured debugging needs, the `TraceLogger` also provides a 
 
 ## Utility Functions
 
-Helpful utility functions for working with Jiki.
+Jiki provides several utility functions to assist with common tasks involved in processing LLM interactions, managing context, and preparing output.
+
+### `clean_output`
+
+This function is designed to post-process the raw text generated by the LLM before it is presented to the end-user. It removes internal Jiki/MCP tags (such as `<mcp_tool_call>`, `<mcp_tool_result>`, `<mcp_available_tools>`, and `<Assistant_Thought>`) that are used during the interaction logic but are not meant for final display. It also normalizes whitespace by trimming leading/trailing spaces and collapsing multiple consecutive newlines into double newlines for better readability.
 
 ::: jiki.utils.cleaning.clean_output
     options:
-      show_root_heading: true
+      show_root_heading: false # Focus on the explanation above
       show_source: false
-      heading_level: 3
+      heading_level: 4
+
+### `trim_context`
+
+LLMs have finite context windows. This utility helps manage the conversation history to ensure it fits within a specified token limit (`max_tokens`). It operates directly (in-place) on the list of message dictionaries. Its strategy is to always preserve the first message (typically the system prompt) and then remove older messages (starting from the second message) one by one until the total token count, as measured by the provided `num_tokens` function (often `jiki.utils.token.count_tokens`), is below the `max_tokens` threshold. It guarantees that at least two messages (the system prompt and the most recent message) remain.
 
 ::: jiki.utils.context.trim_context
     options:
-      show_root_heading: true
+      show_root_heading: false # Focus on the explanation above
       show_source: false
-      heading_level: 3
+      heading_level: 4
+
+### `count_tokens`
+
+Accurately estimating the number of tokens used by the conversation history is crucial for context management. This function calculates the token count for a given list of messages, specific to a particular model (`model_name`). It leverages the `tiktoken` library when available for precise counting (especially for OpenAI models), including per-message overhead. If `tiktoken` is not installed or the model is unknown to it, it falls back to a simple character-based heuristic (approximately 4 characters per token). The output of this function is typically used as the input to the `trim_context` utility's `num_tokens` argument.
 
 ::: jiki.utils.token.count_tokens
     options:
-      show_root_heading: true
+      show_root_heading: false # Focus on the explanation above
       show_source: false
-      heading_level: 3
+      heading_level: 4
 
 ## Complete Module Reference
 

@@ -1,9 +1,8 @@
-import abc # Added for abstract base class
 import warnings # Added for deprecation warnings
 import traceback
 import json
 from pathlib import Path
-from typing import Any, List, Dict, Optional, Union, Callable
+from typing import Any, List, Dict, Optional, Union
 import inspect
 
 # Use specific ClientError for tool call errors
@@ -14,14 +13,12 @@ from mcp.types import ( # Import specific types for processing results
     TextContent,
     ImageContent,
     Resource,
-    ResourceTemplate,
     Tool,
     TextResourceContents,
     BlobResourceContents
 )
 
-from jiki.transports.factory import ITransport, get_transport # Keep for __init__ if needed, but Client infers now
-from jiki.tool_client import IMCPClient, IToolClient
+from jiki.tool_client import IMCPClient
 from jiki.serialization.helpers import json_serializer_default
 
 
