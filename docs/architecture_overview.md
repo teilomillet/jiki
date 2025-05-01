@@ -1,6 +1,18 @@
 # Jiki: Architecture Overview
 
-This document provides a high-level overview of Jiki's internal architecture, focusing on the flow of information during a typical interaction.
+Jiki is designed to bridge the gap between Large Language Models (LLMs) and the real world. While LLMs are powerful text generators, they often lack access to current information, cannot perform specific actions like calculations or API calls, and cannot directly interact with external data sources. Jiki provides the framework to overcome these limitations by enabling LLMs to reliably use "tools" and access "resources".
+
+At its heart, Jiki uses an **Orchestrator** to manage the entire process. Think of the Orchestrator as the central conductor. When you provide input (like a question or a command), the Orchestrator takes it and prepares it for the LLM. This involves not just sending your query, but also telling the LLM what tools and resources are available to it.
+
+The LLM then processes this information. If it determines that it needs to use a tool (e.g., a calculator, a web search function, or a database lookup tool) to fulfill your request, it signals this intention back to the Orchestrator.
+
+The Orchestrator understands this signal. It then uses a specialized component, the **MCP Client** (Model Context Protocol Client), to actually execute the requested tool. This client communicates with the tool, which might be running locally or on a separate server, following the rules of the Model Context Protocol (MCP) standard.
+
+Once the tool finishes its job and returns a result, the MCP Client passes this result back to the Orchestrator. The Orchestrator incorporates this result into the ongoing conversation context and sends it back to the LLM.
+
+Finally, the LLM, now equipped with the information or action result from the tool, generates the final response, which the Orchestrator delivers back to you.
+
+This architecture allows Jiki to augment LLMs with external capabilities in a structured and manageable way. The following sections detail the specific components involved and illustrate the flow of information with diagrams and examples.
 
 ## Visual Architecture
 
