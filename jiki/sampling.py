@@ -19,7 +19,7 @@ class ISamplerConfig(Protocol):
             temperature = 0.5
             top_p = 0.9
             max_tokens = 200
-            stop = ["\n"]
+            stop = ["\\n"]
 
             def to_dict(self):
                 return {
