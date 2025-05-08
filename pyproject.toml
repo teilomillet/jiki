@@ -17,6 +17,7 @@ dependencies = [
     "pytest",
     "fastmcp>=2.1.1",
     "jsonschema",
+    "transformers>=4.51.3",
 ]
 
 [tool.setuptools]
