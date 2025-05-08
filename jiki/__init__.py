@@ -46,6 +46,128 @@ __all__ = [
     'SamplerConfig',
 ]
 
+def _init_model_wrapper(
+    litellm_model_name: str,
+    hf_model_path: Optional[str],
+    model_arch: Optional[str],
+    hf_tokenizer_path: Optional[str],
+    hf_model_kwargs: Optional[Dict[str, Any]],
+    sampler_config: Optional[ISamplerConfig],
+) -> Any:
+    if hf_model_path and model_arch:
+        # Error if litellm_model_name was also provided non-defaultly, indicating ambiguity
+        if litellm_model_name != "anthropic/claude-3-sonnet-20240229": # Check against default
+             print(f"[WARN] Both Hugging Face parameters (hf_model_path, model_arch) and a non-default 'litellm_model_name' ({litellm_model_name}) were provided. Using verl loader based on HF parameters.")
+        try:
+            print("[Jiki Factory] Using VerlCompatibleModel.")
+            from .models.verl_compat import VerlCompatibleModel # Keep import local if only used here
+            return VerlCompatibleModel(
+                model_arch=model_arch,
+                model_path=hf_model_path,
+                tokenizer_path=hf_tokenizer_path,
+                load_value_head=False,
+                sampler_config=sampler_config,
+                model_kwargs=hf_model_kwargs or {},
+            )
+        except ImportError as e:
+            raise ImportError(f"Failed to init VerlCompatibleModel. Ensure 'verl', 'transformers', and 'torch' are installed: {e}") from e
+        except (ValueError, RuntimeError) as e:
+            raise RuntimeError(f"Failed to load model/tokenizer via VerlCompatibleModel: {e}") from e
+    else:
+        if hf_model_path or model_arch:
+            raise ValueError(
+                "For LiteLLMModel, do not provide 'hf_model_path' or 'model_arch'. Specify model via 'litellm_model_name'."
+            )
+        if not litellm_model_name:
+            raise ValueError("'litellm_model_name' must be provided if Hugging Face parameters (hf_model_path, model_arch) are not set.")
+        print("[Jiki Factory] Using LiteLLMModel.")
+        from .models.litellm import LiteLLMModel # Keep import local if only used here
+        return LiteLLMModel(model_name=litellm_model_name, sampler_config=sampler_config)
+
+
+def _init_mcp_client(
+    mcp_mode: str,
+    mcp_script_path: Optional[str],
+    mcp_url: Optional[str],
+    auto_discover_tools: bool,
+    tools: Optional[Union[str, List[Dict[str, Any]]]],
+    logger: Optional[TraceLogger] # Added logger for warnings
+) -> Optional[str]: # Return type changed to Optional[str], removed Dict
+    transport_source = None
+    # connection_info dictionary is no longer created or returned
+
+    if mcp_mode == "stdio":
+        transport_source = mcp_script_path
+        if not transport_source and (auto_discover_tools or tools):
+            default_script = "servers/calculator_server.py"
+            if logger:
+                logger.warning(f"mcp_script_path not provided for stdio mode. Defaulting to {default_script}")
+            else:
+                print(f"[WARN] mcp_script_path not provided for stdio mode. Defaulting to {default_script}", file=sys.stderr)
+            transport_source = default_script
+        # Removed: connection_info = {"type": "stdio", "script_path": transport_source}
+    elif mcp_mode == "sse":
+        if not mcp_url:
+            raise ValueError("mcp_url must be provided for SSE mode")
+        transport_source = mcp_url
+        # Removed: connection_info = {"type": "sse", "url": transport_source}
+    else:
+        raise ValueError(f"Unsupported mcp_mode: {mcp_mode}")
+
+    if not transport_source and (auto_discover_tools or tools):
+        raise ValueError("MCP connection info (mcp_script_path or mcp_url) is required if tools or auto-discovery are used.")
+    return transport_source # Return only transport_source
+
+
+def _configure_tools(
+    auto_discover_tools: bool,
+    tools_param: Optional[Union[str, List[Dict[str, Any]]]],
+    mcp_client: JikiClient, # Type hint for mcp_client
+    logger: Optional[TraceLogger] # Added logger for warnings/info
+) -> List[Dict[str, Any]]:
+    """Helper function to load or discover tool configurations."""
+    actual_tools_config = []
+    if auto_discover_tools:
+        # Use logger if available, otherwise print to stdout/stderr
+        if logger:
+            logger.info("Auto-discovering tools...")
+        else:
+            print("[INFO] Auto-discovering tools...")
+        try:
+            try:
+                loop = asyncio.get_running_loop()
+                actual_tools_config = loop.run_until_complete(mcp_client.discover_tools())
+            except RuntimeError: # No running event loop
+                actual_tools_config = asyncio.run(mcp_client.discover_tools())
+            
+            if logger:
+                logger.info(f"Discovered {len(actual_tools_config)} tools.")
+            else:
+                print(f"[INFO] Discovered {len(actual_tools_config)} tools.")
+        except Exception as e:
+            if logger:
+                logger.error(f"Failed to auto-discover tools: {e}")
+            else:
+                print(f"[ERROR] Failed to auto-discover tools: {e}", file=sys.stderr)
+            raise RuntimeError(f"Failed during tool discovery: {e}") from e
+    elif isinstance(tools_param, str):
+        actual_tools_config = load_tools_config(tools_param)
+    elif isinstance(tools_param, list):
+        actual_tools_config = tools_param
+    elif tools_param is None:
+        actual_tools_config = [] # Explicitly empty list if None
+    else:
+        raise TypeError("'tools' must be a file path (str), list of dicts, or None")
+        
+    if not actual_tools_config and not auto_discover_tools:
+        warning_msg = "No tools configured or discovered."
+        if logger:
+            logger.warning(warning_msg)
+        else:
+            print(f"[WARN] {warning_msg}", file=sys.stderr)
+    return actual_tools_config
+
+
 def Jiki(
     # Model selection parameters - Loader is now inferred
     litellm_model_name: Optional[str] = "anthropic/claude-3-sonnet-20240229", # Default if HF params not given
@@ -107,100 +229,36 @@ def Jiki(
     # Initialize logger first
     logger = TraceLogger(log_dir=trace_dir) if trace else None
 
-    # --- Determine and Initialize Model Wrapper --- 
-    model_wrapper: Any = None
-    use_verl_loader = bool(hf_model_path and model_arch)
-    use_litellm_loader = not use_verl_loader
-
-    print(f"[Jiki Factory] Inferring model loader...")
-    if use_verl_loader:
-        # Error if litellm_model_name was also provided non-defaultly, indicating ambiguity
-        if litellm_model_name != "anthropic/claude-3-sonnet-20240229": # Check against default
-             print(f"[WARN] Both Hugging Face parameters (hf_model_path, model_arch) and a non-default 'litellm_model_name' ({litellm_model_name}) were provided. Using verl loader based on HF parameters.")
-             # raise ValueError("Provide either Hugging Face parameters (hf_model_path, model_arch) for 'verl' loader OR 'litellm_model_name' for 'litellm' loader, not both.")
-        
-        print(f"[Jiki Factory] Using VerlCompatibleModel.")
-        try:
-            model_wrapper = VerlCompatibleModel(
-                model_arch=model_arch, # type: ignore # Checked non-None by use_verl_loader
-                model_path=hf_model_path, # type: ignore # Checked non-None by use_verl_loader
-                tokenizer_path=hf_tokenizer_path, 
-                load_value_head=False, # Default, could be parameter later
-                sampler_config=sampler_config,
-                model_kwargs=hf_model_kwargs or {}
-            )
-            print(f"[Jiki Factory] Initialized VerlCompatibleModel for arch '{model_arch}' from {hf_model_path}")
-        except ImportError as e:
-             raise ImportError(f"Failed to init VerlCompatibleModel. Ensure 'verl', 'transformers', and 'torch' are installed: {e}")
-        except (ValueError, RuntimeError) as e:
-             raise RuntimeError(f"Failed to load model/tokenizer via VerlCompatibleModel: {e}")
-
-    elif use_litellm_loader:
-         # Error if hf parameters were partially provided
-         if hf_model_path or model_arch:
-             raise ValueError("If using 'litellm' loader (default), do not provide 'hf_model_path' or 'model_arch'. Specify model via 'litellm_model_name'.")
-         if not litellm_model_name:
-             raise ValueError("'litellm_model_name' must be provided if Hugging Face parameters (hf_model_path, model_arch) are not set.")
-         
-         print(f"[Jiki Factory] Using LiteLLMModel.")
-         model_wrapper = LiteLLMModel(model_name=litellm_model_name, sampler_config=sampler_config)
-         print(f"[Jiki Factory] Initialized LiteLLMModel for model '{litellm_model_name}'")
-    else:
-         # This case should theoretically not be reached due to how booleans are set
-         raise RuntimeError("Internal error: Could not determine model loader type.")
-
-    # --- Configure MCP client --- 
-    connection_info = {}
-    transport_source = None 
-    if mcp_mode == "stdio":
-        transport_source = mcp_script_path
-        if not transport_source and (auto_discover_tools or tools):
-            default_script = "servers/calculator_server.py"
-            logger.warning(f"mcp_script_path not provided for stdio mode. Defaulting to {default_script}")
-            transport_source = default_script
-        connection_info = {"type": "stdio", "script_path": transport_source}
-    elif mcp_mode == "sse":
-        if not mcp_url:
-            raise ValueError("mcp_url must be provided for SSE mode")
-        transport_source = mcp_url
-        connection_info = {"type": "sse", "url": transport_source}
-    else:
-        raise ValueError(f"Unsupported mcp_mode: {mcp_mode}")
-
-    # JikiClient needs a valid transport_source if tools/discovery is used.
-    if transport_source is None and (auto_discover_tools or tools):
-         raise ValueError("MCP connection info (mcp_script_path or mcp_url) is required if tools or auto-discovery are used.")
+    # --- Determine and Initialize Model Wrapper ---
+    model_wrapper = _init_model_wrapper(
+        litellm_model_name=litellm_model_name, # type: ignore
+        hf_model_path=hf_model_path,
+        model_arch=model_arch,
+        hf_tokenizer_path=hf_tokenizer_path,
+        hf_model_kwargs=hf_model_kwargs,
+        sampler_config=sampler_config
+    )
+    
+    # --- Configure MCP client ---
+    transport_source = _init_mcp_client( # Assign only transport_source
+        mcp_mode=mcp_mode,
+        mcp_script_path=mcp_script_path,
+        mcp_url=mcp_url,
+        auto_discover_tools=auto_discover_tools,
+        tools=tools,
+        logger=logger # Pass logger to the helper
+    )
          
     mcp_client = JikiClient(transport_source=transport_source)
 
     # --- Tool Configuration Loading --- 
-    actual_tools_config = []
-    if auto_discover_tools:
-        print("[INFO] Auto-discovering tools...")
-        try:
-            # Prefer running async functions from an async context if possible.
-            # If Jiki() is called from sync code, we need asyncio.run or similar.
-            try:
-                 loop = asyncio.get_running_loop()
-                 actual_tools_config = loop.run_until_complete(mcp_client.discover_tools())
-            except RuntimeError: # No running event loop
-                 actual_tools_config = asyncio.run(mcp_client.discover_tools())
-                 
-            print(f"[INFO] Discovered {len(actual_tools_config)} tools.")
-        except Exception as e:
-            print(f"[ERROR] Failed to auto-discover tools: {e}", file=sys.stderr)
-            raise RuntimeError(f"Failed during tool discovery: {e}") from e # Propagate error
-    elif isinstance(tools, str):
-        actual_tools_config = load_tools_config(tools)
-    elif isinstance(tools, list):
-        actual_tools_config = tools
-    elif tools is None:
-        actual_tools_config = [] # Explicitly empty list if None
-    else:
-        raise TypeError("'tools' must be a file path (str), list of dicts, or None")
-        
-    if not actual_tools_config and not auto_discover_tools:
-        print("[WARN] No tools configured or discovered.", file=sys.stderr)
+    # Extracted to _configure_tools helper function to improve readability and reduce Jiki function length.
+    actual_tools_config = _configure_tools(
+        auto_discover_tools=auto_discover_tools,
+        tools_param=tools, # Pass the 'tools' parameter from Jiki
+        mcp_client=mcp_client,
+        logger=logger
+    )
 
     # --- Create orchestrator instance --- 
     orchestrator = JikiOrchestrator(
