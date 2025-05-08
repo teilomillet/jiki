@@ -156,7 +156,7 @@ def Jiki(
         transport_source = mcp_script_path
         if not transport_source and (auto_discover_tools or tools):
             default_script = "servers/calculator_server.py"
-            print(f"[WARN] mcp_script_path not provided for stdio mode. Defaulting to {default_script}", file=sys.stderr)
+            logger.warning(f"mcp_script_path not provided for stdio mode. Defaulting to {default_script}")
             transport_source = default_script
         connection_info = {"type": "stdio", "script_path": transport_source}
     elif mcp_mode == "sse":
