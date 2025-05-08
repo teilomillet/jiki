@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import json
 import os
 import datetime
@@ -6,63 +6,63 @@ import datetime
 class TraceLogger:
     """
     Logger for recording structured conversation events and interaction traces.
-    This logger supports the MCP interaction trace format needed for training data generation.
+    This logger is designed to be general-purpose. Downstream systems (like an RL trainer)
+    can use this to log rich interaction data from Jiki.
     """
     def __init__(self, log_dir="interaction_traces"):
         self.events: List[Dict[str, Any]] = []
         self.complete_traces: List[Dict[str, Any]] = []
         self.log_dir = log_dir
-        # Ensure log_dir exists, possibly handle path object
         try:
             os.makedirs(log_dir, exist_ok=True)
         except TypeError:
-            # Handle if log_dir is a Path object
             os.makedirs(str(log_dir), exist_ok=True)
             self.log_dir = str(log_dir)
 
     def log_event(self, event: Dict[str, Any]):
         """
-        Append a structured event to the log.
+        Append a structured event to the internal events list.
+        These events are typically aggregated into a complete trace.
         """
         self.events.append(event)
         
     def debug(self, message: str, **kwargs):
         """Log a debug message (currently prints to stderr)."""
-        # Simple implementation: print to stderr
-        # Could be expanded to use Python's logging module later
         import sys
         print(f"[DEBUG] {message}", file=sys.stderr)
         
     def log_complete_trace(self, trace_data: Dict[str, Any]):
         """
-        Log a complete interaction trace suitable for training data generation.
-        The trace should include the full conversation with all MCP-related tags.
+        Log a complete interaction trace.
+        The trace_data dictionary is augmented with a timestamp, a default reward field (if not present),
+        and any accumulated events, then stored.
         
-        :param trace_data: Dictionary containing the complete trace information
+        Args:
+            trace_data: Dictionary containing the primary trace information.
         """
-        # Add timestamp to the trace
         timestamp = datetime.datetime.now().isoformat()
-        # Always include an explicit reward field so downstream RL code can
-        # easily fill it in.  If the caller already supplied one, keep it.
+        
+        # Ensure a 'reward' field exists, defaulting to None if not provided in trace_data.
+        # This allows downstream systems to populate it meaningfully if applicable.
+        current_reward = trace_data.get("reward") # Preserve existing reward if any
+
         trace_with_meta = {
             "timestamp": timestamp,
-            "reward": trace_data.get("reward"),  # None if missing
+            "reward": current_reward, # Will be None if not in trace_data
             **trace_data,
         }
-        # Include any recorded events (e.g., system messages, tool results, thoughts)
+
+        # If there are any accumulated events, add them to this trace and clear the events list.
         if self.events:
             trace_with_meta["events"] = self.events.copy()
-            # Clear events after snapshotting to avoid duplication
             self.events.clear()
-        
+
         self.complete_traces.append(trace_with_meta)
-        
-        # Remove automatic saving per trace
-        # self._save_trace_to_file(trace_with_meta)
         
     def _save_trace_to_file(self, trace: Dict[str, Any]):
         """
-        Save a single trace to a JSON file in the log directory.
+        Internal helper to save a single trace to a JSON file.
+        Not typically called directly; save_all_traces is preferred.
         """
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{self.log_dir}/trace_{timestamp}.json"
@@ -70,52 +70,47 @@ class TraceLogger:
         with open(filename, "w") as f:
             json.dump(trace, f, indent=2)
             
-    def get_current_traces(self):
+    def get_current_traces(self) -> List[Dict[str, Any]]:
         """
-        Get all traces from the current session.
+        Get a copy of all accumulated traces from the current session.
         
         Returns:
-            list: List of trace dictionaries
+            List[Dict[str, Any]]: A list of trace dictionaries.
         """
         return self.complete_traces.copy()
 
-    def save_all_traces(self, filepath=None):
+    def save_all_traces(self, filepath: Optional[str] = None):
         """
-        Save all accumulated traces to a file.
-        If filepath is not provided, use the default log directory with timestamp.
+        Save all accumulated traces to a file. 
+        Defaults to a timestamped .jsonl file in the log_dir.
         
         Args:
-            filepath (str, optional): Path to save the traces
+            filepath: Optional path to save the traces. If None, a default is used.
         """
         if not self.complete_traces:
             print("No interaction traces to save.")
             return
             
         if filepath is None:
-            # Create a directory for traces if it doesn't exist
             os.makedirs(self.log_dir, exist_ok=True)
-            
-            # Generate a timestamp for unique filenames
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            
-            # Default filepath with timestamp
-            filepath = os.path.join(self.log_dir, f"traces_{timestamp}.json")
+            # Defaulting to .jsonl as it's generally better for appending logs.
+            filepath = os.path.join(self.log_dir, f"traces_{timestamp}.jsonl") 
         
-        # Ensure directory exists before writing
         abs_filepath = os.path.abspath(filepath)
         os.makedirs(os.path.dirname(abs_filepath), exist_ok=True)
         
-        # Save as JSON or JSONL based on extension
-        if filepath.endswith('.jsonl'):
-            # append so multiple calls accumulate in one file
-            with open(abs_filepath, "a") as f:
+        is_jsonl = filepath.endswith('.jsonl')
+        mode = "a" if is_jsonl else "w" # Append for .jsonl, overwrite for .json
+
+        with open(abs_filepath, mode) as f:
+            if is_jsonl:
                 for trace in self.complete_traces:
                     f.write(json.dumps(trace) + "\n")
-        else:
-            # Default to JSON if not .jsonl
-            with open(abs_filepath, "w") as f:
+            else: # .json or other
                 json.dump(self.complete_traces, f, indent=2)
                 
-        print(f"Saved {len(self.complete_traces)} interaction traces to {abs_filepath}")
-        
-        # Removed saving of self.events as per plan focus on complete_traces 
+        self.debug(f"Saved {len(self.complete_traces)} interaction traces to {abs_filepath}")
+        # Consider clearing traces after saving if that's the desired behavior, e.g.:
+        # self.complete_traces.clear()
+        # For now, traces are kept, allowing multiple saves or continued accumulation. 

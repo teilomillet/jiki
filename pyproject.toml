@@ -16,6 +16,7 @@ dependencies = [
     "litellm",
     "pytest",
     "fastmcp>=2.1.1",
+    "jsonschema",
 ]
 
 [tool.setuptools]

@@ -142,13 +142,34 @@ class JikiClient(IMCPClient):
             # Process the result into the expected dictionary format
             tools_config = []
             for tool in tool_list_mcp:
-                # Adapt based on mcp.types.Tool structure (assuming attributes like name, description, inputSchema)
+                # Adapt based on mcp.types.Tool structure
+                # The 'inputSchema' attribute from mcp.types.Tool should be a 
+                # complete JSON schema object for the arguments.
+                input_schema_from_server = getattr(tool, 'inputSchema', None)
+
+                # Ensure input_schema_from_server is a dict if not None, otherwise default to empty dict
+                # for compatibility with JikiOrchestrator which expects a dict for self._tools_map construction.
+                # If input_schema_from_server is None (tool has no arguments), 
+                # validate_tool_call will handle it correctly.
+                if input_schema_from_server is not None and not isinstance(input_schema_from_server, dict):
+                    print(f"[WARN] Discovered tool '{getattr(tool, 'name', 'Unknown')}' has non-dict inputSchema: {type(input_schema_from_server)}. Using empty schema for arguments.")
+                    effective_argument_schema = {}
+                elif input_schema_from_server is None:
+                    effective_argument_schema = {} # No arguments defined for this tool
+                else:
+                    effective_argument_schema = input_schema_from_server
+
                 schema = {
                     "tool_name": getattr(tool, 'name', None),
                     "description": getattr(tool, 'description', ''),
-                    # Assuming inputSchema has .properties and optional .required
-                    "arguments": getattr(tool, 'inputSchema', {}).get('properties', {}),
-                    "required": getattr(tool, 'inputSchema', {}).get('required', [])
+                    # 'arguments' should now store the complete JSON schema for the arguments object
+                    "arguments": effective_argument_schema,
+                    # The 'required' field here is now redundant if 'inputSchema' is a full JSON schema
+                    # and contains its own 'required' list. We can remove it or ignore it if 
+                    # validate_tool_call relies solely on the schema passed to jsonschema.validate.
+                    # For now, let's remove it from here to avoid confusion, as validate_tool_call
+                    # will use the schema in "arguments".
+                    # "required": getattr(tool, 'inputSchema', {}).get('required', []) # Removed
                 }
                 if schema["tool_name"]:
                     tools_config.append(schema)
